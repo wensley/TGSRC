@@ -37,13 +37,21 @@ import aiofiles
 from config import YT_COOKIES, INSTA_COOKIES
 from mutagen.id3 import ID3, TIT2, TPE1, COMM, APIC
 from mutagen.mp3 import MP3
- 
+from config import LOG_GROUP
+
 logger = logging.getLogger(__name__)
  
  
 thread_pool = ThreadPoolExecutor()
 ongoing_downloads = {}
- 
+
+async def send_dl_log(text):
+    try:
+        from shared_client import app as _bot
+        await _bot.send_message(LOG_GROUP, text, disable_web_page_preview=True)
+    except Exception as e:
+        logger.warning(f"Failed to send log to LOG_GROUP: {e}")
+
 def d_thumbnail(thumbnail_url, save_path):
     try:
         response = requests.get(thumbnail_url, stream=True)
@@ -198,6 +206,7 @@ async def adl_handler(event):
 
     url = event.message.text.split()[1]
     ongoing_downloads[user_id] = True
+    await send_dl_log(f"⬇️ **开始下载**\n用户: `{user_id}`\n链接: `{url}`")
 
     try:
         if "open.spotify.com" in url:
@@ -308,16 +317,20 @@ async def dl_handler(event):
  
     url = event.message.text.split()[1]
     ongoing_downloads[user_id] = True
- 
+    await send_dl_log(f"⬇️ **开始下载音频**\n用户: `{user_id}`\n链接: `{url}`")
+
     try:
-        if "instagram.com" in url:
-            await process_video(client, event, url, INSTA_COOKIES, check_duration_and_size=False)
+        if "open.spotify.com" in url:
+            await process_spotify_audio(client, event, url)
+        elif "instagram.com" in url:
+            await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
         elif "youtube.com" in url or "youtu.be" in url:
-            await process_video(client, event, url, YT_COOKIES, check_duration_and_size=True)
+            await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
         else:
-            await process_video(client, event, url, None, check_duration_and_size=False)
+            await process_audio(client, event, url)
     except Exception as e:
         await event.reply(f"❌ **发生错误:** `{str(e)}`")
+        await send_dl_log(f"❌ **音频下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
     finally:
         ongoing_downloads.pop(user_id, None)
 
@@ -335,6 +348,7 @@ async def music_handler(event):
     
     query = args[1]
     ongoing_downloads[user_id] = True
+    await send_dl_log(f"🎵 **音乐搜索**\n用户: `{user_id}`\n关键词: `{query}`")
 
     try:
         if "open.spotify.com" in query:
@@ -343,7 +357,8 @@ async def music_handler(event):
             search_url = f"ytsearch1:{query}"
             await process_audio(client, event, search_url, cookies_env_var=YT_COOKIES)
     except Exception as e:
-        await event.reply(f"❌ **搜索/下载失败:** `{str(e)}`")
+        await event.reply(f"❌ **发生错误:** `{str(e)}`")
+        await send_dl_log(f"❌ **音乐搜索失败**\n用户: `{user_id}`\n关键词: `{query}`\n错误: `{str(e)[:100]}`")
     finally:
         ongoing_downloads.pop(user_id, None)
  
@@ -573,6 +588,8 @@ async def auto_ytdl(c, m):
     
     url = m.text
     ongoing_downloads[user_id] = True
+    await send_dl_log(f"⬇️ **自动检测下载**\n用户: `{user_id}`\n链接: `{url}`")
+
     try:
         from shared_client import client as telethon_client
         if "open.spotify.com" in url:
@@ -583,6 +600,9 @@ async def auto_ytdl(c, m):
             await process_video(telethon_client, m, url, YT_COOKIES, check_duration_and_size=True)
         else:
             await process_video(telethon_client, m, url, None, check_duration_and_size=False)
+        await send_dl_log(f"✅ **下载完成**\n用户: `{user_id}`\n链接: `{url}`")
+    except Exception as e:
+        await send_dl_log(f"❌ **自动下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
     finally:
         ongoing_downloads.pop(user_id, None)
 

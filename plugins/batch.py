@@ -102,6 +102,13 @@ async def upd_dlg(c):
         print(f'Failed to update dialogs: {e}')
         return False
 
+async def send_log(text):
+    try:
+        from shared_client import app as _bot
+        await _bot.send_message(LOG_GROUP, text, disable_web_page_preview=True)
+    except Exception as e:
+        print(f'Failed to send log to LOG_GROUP: {e}')
+
 # fixed the old group of 2021-2022 extraction 🌝 (buy krne ka fayda nhi ab old group) ✅ 
 async def get_msg(c, u, i, d, lt):
     try:
@@ -623,6 +630,10 @@ async def text_handler(c, m):
             "progress_message_id": pt.id
         })
 
+        source_link_single = f"https://t.me/{i}/{s}"
+        targets_display = await get_user_data_key(str(m.chat.id), 'chat_id', 'DM')
+        await send_log(f"📥 **单条消息搬运**\n用户: `{uid}`\n来源: `{source_link_single}`\n目标: `{targets_display}`")
+
         try:
             # Check for media group
             messages = []
@@ -792,6 +803,10 @@ async def text_handler(c, m):
             Z.pop(uid, None)
             return
         
+        source_link = f"https://t.me/{i}/{s}"
+        targets_display = await get_user_data_key(str(m.chat.id), 'chat_id', 'DM')
+        await send_log(f"🔄 **批量搬运开始**\n用户: `{uid}`\n来源: `{source_link}`\n数量: `{count}`\n目标: `{targets_display}`")
+        
         await add_active_batch(uid, {
             "total": n,
             "current": 0,
@@ -831,6 +846,7 @@ async def text_handler(c, m):
             
             if j+1 == n:
                 await m.reply_text(f'Batch Completed ✅ Success: {success}/{n}')
+                await send_log(f"✅ **批量搬运完成**\n用户: `{uid}`\n来源: `{source_link}`\n成功: `{success}/{n}`")
         
         finally:
             await remove_active_batch(uid)

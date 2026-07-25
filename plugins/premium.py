@@ -68,5 +68,10 @@ async def start_handler(client, message):
         "🚀 直接发送受限频道的**消息链接**即可开始！发送 /help 查看详细指令。"
     )
 
-    await message.reply_text(text)
+    buttons = IKM([
+        [IK("💎 购买会员", callback_data="see_plan"),
+         IK("📢 加入频道", url="https://t.me/avworldcn")]
+    ])
+
+    await message.reply_text(text, reply_markup=buttons)
 
