@@ -4,7 +4,7 @@
 
 from datetime import timedelta, datetime
 from shared_client import client as bot_client
-from telethon import events
+from telethon import events, Button
 from utils.func import get_premium_details, is_private_chat, get_display_name, get_user_data, is_premium_user, remove_premium_user
 from config import OWNER_ID
 import logging
@@ -45,7 +45,11 @@ async def status_handler(event):
     await event.respond(
         "📊 **您的当前状态:**\n\n"
         f"**登录状态:** {'✅ 已登录' if session_active else '❌ 未登录'}\n"
-        f"**会员状态:** {premium_status}"
+        f"**会员状态:** {premium_status}",
+        buttons=[
+            [Button.inline("💎 购买会员", data=b"see_plan"),
+             Button.url("📢 加入频道", "https://t.me/avworldcn")]
+        ]
     )
 
 @bot_client.on(events.NewMessage(pattern='/transfer'))

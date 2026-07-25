@@ -25,7 +25,10 @@ ACTIVE_USERS_FILE = "active_users.json"
 
 # fixed directory file_name problems 
 def sanitize(filename):
-    return re.sub(r'[<>:"/\\|?*\']', '_', filename).strip(" .")[:255]
+    name = re.sub(r'[<>:"/\\|?*\']', '_', filename)
+    name = name.replace(' ', '_')
+    name = re.sub(r'_+', '_', name)
+    return name.strip("._")[:255]
 
 def load_active_users():
     try:
@@ -327,16 +330,17 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
             user_cap = await get_user_data_key(d, 'caption', '')
             ft = f'{proc_text}\n\n{user_cap}' if proc_text and user_cap else user_cap if user_cap else proc_text
 
-            # --- 尝试秒发 (全类型，尝试对所有目标发送) ---
-            all_direct_ok = True
+            # --- 尝试秒发，记录成功目标避免后续重复 ---
+            failed_targets = []
             if not emp.get(i, False):
                 for tcid, rtmid in targets:
                     if not await send_direct(c, m, tcid, ft, rtmid, user_client=u):
-                        all_direct_ok = False
+                        failed_targets.append((tcid, rtmid))
                         print(f"Direct send failed for target {tcid}")
-                if all_direct_ok:
+                if not failed_targets:
                     return 'Sent directly.'
                 print(f"Direct send failed for some targets, falling back to download/upload.")
+                targets = failed_targets
             
             st = time.time()
             reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚫 取消任务", callback_data=f"cancel_{uid}")]])
@@ -657,7 +661,7 @@ async def text_handler(c, m):
                 if total > 1:
                     await pt.edit(f'检测到媒体组 ({total} 个文件)，正在尝试合并秒发...')
                     
-                    all_ok = True
+                    failed_targets = []
                     for tcid, rtmid in targets:
                         sent = await send_direct_group(ubot, messages, tcid, rtmid=rtmid, user_client=uc)
                         if not sent:
@@ -669,13 +673,14 @@ async def text_handler(c, m):
                             except Exception as fe:
                                 print(f"Forward fallback failed for {tcid}: {fe}")
                         if not sent:
-                            all_ok = False
+                            failed_targets.append((tcid, rtmid))
                             print(f"Media group send failed for target {tcid}")
                     
-                    if all_ok:
+                    if not failed_targets:
                         await pt.edit(f'✅ 媒体组已秒发成功！')
                         return
                     else:
+                        targets = failed_targets
                         await pt.edit(f'合并秒发失败，将尝试并行下载并合并发送...')
 
                 # --- 2. 如果秒发失败且是媒体组，尝试下载后合并发送 ---
