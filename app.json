@@ -1,10 +1,10 @@
 {
-  "name": "Save Restricted Content Bot v3",
-  "description": "Save Restricted Content Bot by Team SPY",
+  "name": "Save Restricted Content Bot v4",
+  "description": "Save Restricted Content Bot: Instagram, Youtube, Tiktok, Twitch and etc downloader",
   "logo": "https://pub-2e3ab04374bd41859d84b033cb10bd6a.r2.dev/avatar.png",
   "keywords": ["python3", "telegram", "MusicBot", "telegram-bot", "pyrogram"],
-  "repository": "https://github.com/devgaganin/save_restricted-content-telegram-bot-repo",
-  "success_url": "https://devgagan.in",
+  "repository": "https://github.com/wensley/TGSRC",
+  "success_url": "https://avgifbus.cf",
   "env": {
     "API_ID": {
       "description": "Get this value from https://my.telegram.org",
@@ -28,7 +28,7 @@
     },
     "OWNER_ID": {
       "description": "User ID(s) to be set as bot owner(s), separated by space (e.g., 1234 5678)",
-      "value": "",
+      "value": "831748654",
       "required": true
     },
     "STRING": {
@@ -38,12 +38,12 @@
     },
     "FORCE_SUB": {
       "description": "Channel ID (with -100 prefix) for forced subscription",
-      "value": "-10012345567",
+      "value": "-1003720632561",
       "required": true
     },
     "LOG_GROUP": {
       "description": "Log channel/group ID (with -100 prefix) where the bot will send logs",
-      "value": "-1001234456",
+      "value": "-1003955968893",
       "required": true
     },
     "MASTER_KEY": {
@@ -68,7 +68,7 @@
     },
     "FREEMIUM_LIMIT": {
       "description": "Limit for freemium users (in MB or desired unit)",
-      "value": "0",
+      "value": "500",
       "required": false
     },
     "PREMIUM_LIMIT": {
