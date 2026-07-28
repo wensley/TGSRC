@@ -38,6 +38,13 @@ except Exception:
     TelegramClient = None
     DocumentAttributeVideo = None
     EditMessageRequest = None
+try:
+    from yt_dlp.utils import ExtractorError, DownloadError
+except Exception:
+    class ExtractorError(Exception):
+        pass
+    class DownloadError(Exception):
+        pass
 from utils.func import get_video_metadata, screenshot
 try:
     from devgagantools import fast_upload
@@ -64,6 +71,31 @@ logger = logging.getLogger(__name__)
  
 thread_pool = ThreadPoolExecutor()
 ongoing_downloads = {}
+
+
+async def try_handle_incoming_link(c, m):
+    # Auto-detect and handle social links in plain messages
+    text = getattr(m, 'text', '') or getattr(m, 'caption', '') or ''
+    if not text:
+        return False
+
+    # Simple heuristics for common platforms
+    platforms = ["youtube.com", "youtu.be", "twitter.com", "x.com", "instagram.com", "tiktok.com", "open.spotify.com"]
+    if any(p in text for p in platforms):
+        # prefer explicit commands if user added them, otherwise act as /dl
+        url = None
+        for token in text.split():
+            if token.startswith('http'):
+                url = token
+                break
+        if not url:
+            return False
+
+        user_id = getattr(getattr(m, 'from_user', None), 'id', None)
+        # run in background to avoid blocking
+        asyncio.create_task(process_audio(c, m, url, cookies_env_var=None))
+        return True
+    return False
 
 async def send_dl_log(text):
     try:
@@ -176,6 +208,14 @@ async def process_audio(client, event, url, cookies_env_var=None):
     try:
         try:
             info_dict = await extract_audio_async(ydl_opts, url)
+        except (ExtractorError, DownloadError) as e:
+            msg = str(e)
+            logger.warning(f"yt_dlp extractor/download error: {msg}")
+            if 'No video could be found' in msg or 'No video' in msg or 'No audio' in msg:
+                await progress_message.edit("❌ 未找到可下载的媒体：源消息不包含可下载的视频或音频。")
+                return
+            # let other extractor errors bubble up to be handled below
+            raise
         except Exception as e:
             if "Netscape format cookies file" in str(e):
                 logger.warning("Invalid cookies detected, retrying without cookies.")
@@ -251,12 +291,24 @@ async def process_audio(client, event, url, cookies_env_var=None):
  
     except Exception as e:
         logger.exception("Error during audio extraction or upload")
-        await event.reply(f"❌ **发生错误:** `{e}`")
+        try:
+            await progress_message.edit(f"❌ **发生错误:** `{e}`")
+        except Exception:
+            try:
+                await event.reply(f"❌ **发生错误:** `{e}`")
+            except Exception:
+                pass
     finally:
         if os.path.exists(download_path):
             os.remove(download_path)
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
+        # Ensure progress message is removed so UI doesn't stay stuck
+        try:
+            if progress_message:
+                await progress_message.delete()
+        except Exception:
+            pass
  
 if client is not None and events is not None:
     @client.on(events.NewMessage(pattern="/adl"))
@@ -681,6 +733,18 @@ if pyro_app is not None and filters is not None:
             await send_dl_log(f"❌ **自动下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
         finally:
             ongoing_downloads.pop(user_id, None)
+
+
+# Also register a plain-text link detector to auto-handle links without /dl
+if pyro_app is not None and filters is not None:
+    @pyro_app.on_message(filters.text & filters.private)
+    async def plain_link_detector(c, m):
+        try:
+            handled = await try_handle_incoming_link(c, m)
+            if handled:
+                await m.reply_text('🔗 Detected link and started processing. Use /cancel to stop.')
+        except Exception:
+            pass
 
 async def split_and_upload_file(app, sender, file_path, caption):
     if not os.path.exists(file_path):
