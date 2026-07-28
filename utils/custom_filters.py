@@ -7,7 +7,10 @@ from pyrogram import filters
 user_steps = {}
 
 def login_filter_func(_, __, message):
-    user_id = message.from_user.id
+    user = getattr(message, 'from_user', None)
+    if user is None:
+        return False
+    user_id = user.id
     return user_id in user_steps
 
 login_in_progress = filters.create(login_filter_func)

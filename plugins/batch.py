@@ -13,7 +13,7 @@ from shared_client import app as X
 from plugins.settings import rename_file
 from plugins.start import subscribe as sub
 from utils.custom_filters import login_in_progress
-from utils.encrypt import dcs
+from utils.encrypt import decrypt_str
 from typing import Dict, Any, Optional
 
 
@@ -189,7 +189,7 @@ async def get_uclient(uid):
     xxx = ud.get('session_string')
     if xxx:
         try:
-            ss = dcs(xxx)
+            ss = decrypt_str(xxx)
             gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss)
             await gg.start()
             await upd_dlg(gg)

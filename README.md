@@ -1,5 +1,7 @@
 # TGSRC — Telegram 受限内容搬运机器人
 
+本项目基于 devgagan 的实现（https://github.com/devgaganin），在此基础上进行了若干修复与改进。原作者保留所有原始版权和许可信息。
+
 基于 Pyrogram + Telethon 双客户端的 Telegram Bot，支持：
 - 破解转发/保存限制，搬运私有频道内容
 - 批量搬运（按消息 ID 范围）
