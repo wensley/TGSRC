@@ -45,9 +45,15 @@ except Exception:
     def fast_upload(*args, **kwargs):
         raise NotImplementedError("fast_upload is not available in test environment")
 from concurrent.futures import ThreadPoolExecutor
-import aiohttp 
+try:
+    import aiohttp
+except Exception:
+    aiohttp = None
 import logging
-import aiofiles
+try:
+    import aiofiles
+except Exception:
+    aiofiles = None
 from config import YT_COOKIES, INSTA_COOKIES
 from mutagen.id3 import ID3, TIT2, TPE1, COMM, APIC
 from mutagen.mp3 import MP3
@@ -67,13 +73,24 @@ async def send_dl_log(text):
         logger.warning(f"Failed to send log to LOG_GROUP: {e}")
 
 def d_thumbnail(thumbnail_url, save_path):
-    # Synchronous thumbnail download with simple retry logic
+    return http_get_sync_with_retries(thumbnail_url, save_path)
+ 
+ 
+async def download_thumbnail_async(url, path):
+    return await http_get_async_with_retries(url, path)
+
+
+def http_get_sync_with_retries(url, save_path, retries=3, timeout=10, backoff=1.0):
+    try:
+        import requests
+    except Exception:
+        logger.warning("requests not available; cannot download thumbnail")
+        return None
+
     session = requests.Session()
-    retries = 3
-    backoff = 1.0
     for attempt in range(1, retries + 1):
         try:
-            resp = session.get(thumbnail_url, stream=True, timeout=10)
+            resp = session.get(url, stream=True, timeout=timeout)
             resp.raise_for_status()
             with open(save_path, 'wb') as f:
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -81,35 +98,38 @@ def d_thumbnail(thumbnail_url, save_path):
                         f.write(chunk)
             return save_path
         except requests.RequestException as e:
-            logger.warning(f"Attempt {attempt} failed to download thumbnail: {e}")
+            logger.warning(f"Attempt {attempt} failed to download {url}: {e}")
             if attempt < retries:
                 time.sleep(backoff * attempt)
                 continue
-            logger.error(f"Failed to download thumbnail after {retries} attempts: {e}")
+            logger.error(f"Failed to download {url} after {retries} attempts: {e}")
             return None
- 
- 
-async def download_thumbnail_async(url, path):
-    # Async thumbnail download with retries
-    retries = 3
-    backoff = 1.0
+
+
+async def http_get_async_with_retries(url, save_path, retries=3, timeout=10, backoff=1.0):
+    try:
+        import aiohttp
+    except Exception:
+        logger.warning("aiohttp not available; cannot download async thumbnail")
+        return None
+
     async with aiohttp.ClientSession() as session:
         for attempt in range(1, retries + 1):
             try:
-                async with session.get(url, timeout=10) as response:
+                async with session.get(url, timeout=timeout) as response:
                     if response.status == 200:
                         data = await response.read()
-                        with open(path, 'wb') as f:
+                        with open(save_path, 'wb') as f:
                             f.write(data)
-                        return path
+                        return save_path
                     else:
-                        raise aiohttp.ClientError(f"Status {response.status}")
+                        raise Exception(f"Status {response.status}")
             except Exception as e:
-                logger.warning(f"Async thumbnail download attempt {attempt} failed: {e}")
+                logger.warning(f"Async attempt {attempt} failed for {url}: {e}")
                 if attempt < retries:
                     await asyncio.sleep(backoff * attempt)
                     continue
-                logger.error(f"Async thumbnail download failed after {retries} attempts: {e}")
+                logger.error(f"Async download failed for {url} after {retries} attempts: {e}")
                 return None
  
  
@@ -625,18 +645,24 @@ async def process_video(client, event, url, cookies_env_var, check_duration_and_
         if thumbnail_file and os.path.exists(thumbnail_file):
             os.remove(thumbnail_file)
 
-from pyrogram import filters
-from shared_client import app as pyro_app
+try:
+    from pyrogram import filters
+    from shared_client import app as pyro_app
+except Exception:
+    filters = None
+    pyro_app = None
 
-if pyro_app is not None:
+if pyro_app is not None and filters is not None:
     @pyro_app.on_message(filters.regex(r"https?://(www\.)?(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|twitter\.com|x\.com|facebook\.com|terabox\.com|\w+\.spotify\.com)") & filters.private)
     async def auto_ytdl(c, m):
-        user_id = m.from_user.id
+        user_id = getattr(getattr(m, 'from_user', None), 'id', None)
+        if user_id is None:
+            return
         if user_id in ongoing_downloads:
             await m.reply_text("⚠️ **您当前已有正在运行的任务，请稍候。**")
             return
 
-        url = m.text
+        url = getattr(m, 'text', '')
         ongoing_downloads[user_id] = True
         await send_dl_log(f"⬇️ **自动检测下载**\n用户: `{user_id}`\n链接: `{url}`")
 
