@@ -13,8 +13,11 @@ from shared_client import app as X
 from plugins.settings import rename_file
 from plugins.start import subscribe as sub
 from utils.custom_filters import login_in_progress
-from utils.encrypt import dcs
+from utils.encrypt import decrypt_str
 from typing import Dict, Any, Optional
+import subprocess
+import shlex
+import tempfile
 
 
 Y = None if not STRING else __import__('shared_client').userbot
@@ -189,7 +192,7 @@ async def get_uclient(uid):
     xxx = ud.get('session_string')
     if xxx:
         try:
-            ss = dcs(xxx)
+            ss = decrypt_str(xxx)
             gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss)
             await gg.start()
             await upd_dlg(gg)
@@ -239,7 +242,7 @@ async def send_direct_group(c, messages, tcid, ft=None, rtmid=None, user_client=
         from_chat = messages[0].chat.id
         msg_ids = [m.id for m in messages]
         
-        # 方法 1: 机器人直接复制
+        # 方法 1: 机器人复制媒体组（不会带原频道“via @channel”链接）
         try:
             await c.copy_media_group(tcid, from_chat, msg_ids, reply_to_message_id=rtmid)
             return True
@@ -253,16 +256,48 @@ async def send_direct_group(c, messages, tcid, ft=None, rtmid=None, user_client=
                 return True
             except Exception:
                 pass
-            
-        # 方法 2: 用户代理中转
-        if Y and LOG_GROUP:
-            try:
-                tms = await Y.copy_media_group(LOG_GROUP, from_chat, msg_ids)
-                await c.copy_media_group(tcid, LOG_GROUP, [m.id for m in tms], reply_to_message_id=rtmid)
-                return True
-            except Exception as e:
-                print(f"Transfer group forward failed: {e}")
-                pass
+
+        # 方法 2: 退回到下载并重新发送（避免 forward 带原始来源链接）
+        try:
+            # 下载每条消息并通过机器人发送为媒体组
+            files = []
+            DOWNLOAD_DIR = tempfile.mkdtemp(prefix='tg_batch_')
+            for msg in messages:
+                ext = '.mp4' if getattr(msg, 'video', None) or getattr(msg, 'video_note', None) else '.jpg' if getattr(msg, 'photo', None) else '.bin'
+                tmp = os.path.join(DOWNLOAD_DIR, f"{time.time()}{ext}")
+                # prefer bot download via c if possible
+                try:
+                    fpath = await c.download_media(msg, file_name=tmp)
+                except Exception:
+                    fpath = await (user_client.download_media(msg, file_name=tmp) if user_client else None)
+                if fpath:
+                    files.append(fpath)
+
+            if not files:
+                return False
+
+            from pyrogram.types import InputMediaVideo, InputMediaPhoto, InputMediaDocument
+            media = []
+            for fpath, msg in zip(files, messages):
+                if fpath.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
+                    media.append(InputMediaVideo(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
+                elif fpath.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    media.append(InputMediaPhoto(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
+                else:
+                    media.append(InputMediaDocument(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
+
+            if media:
+                await c.send_media_group(tcid, media, reply_to_message_id=rtmid)
+                # cleanup
+                for f in files:
+                    try:
+                        os.remove(f)
+                    except Exception:
+                        pass
+            return True
+        except Exception as e:
+            print(f"send_direct_group download fallback failed: {e}")
+            return False
     except Exception as e:
         print(f"send_direct_group error: {e}")
     return False
@@ -294,24 +329,59 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None, user_client=None):
                 print(f"Transfer forward failed: {e}")
                 pass
 
-        # 方法 3: 通过 File ID 发送
-        if m.video:
-            await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
-        elif m.video_note:
-            await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
-        elif m.voice:
-            await c.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
-        elif m.sticker:
-            await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
-        elif m.audio:
-            await c.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
-        elif m.photo:
-            photo_id = m.photo.file_id if hasattr(m.photo, 'file_id') else m.photo[-1].file_id
-            await c.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
-        elif m.document:
-            await c.send_document(tcid, m.document.file_id, caption=ft, file_name=m.document.file_name, reply_to_message_id=rtmid)
-        else:
-            return False
+        # 方法 3: 通过 File ID 发送 - 仅在确认为安全的情况下使用，否则先下载再发送以确保预览与旋转
+        try:
+            # Prefer copying/using file_id to preserve speed, but avoid forwarding original channel link
+            if getattr(m, 'video', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
+            elif getattr(m, 'video_note', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
+            elif getattr(m, 'voice', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
+            elif getattr(m, 'sticker', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+            elif getattr(m, 'audio', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
+            elif getattr(m, 'photo', None) and not getattr(m, 'forward_from_chat', None):
+                photo_id = m.photo.file_id if hasattr(m.photo, 'file_id') else m.photo[-1].file_id
+                await c.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
+            elif getattr(m, 'document', None) and not getattr(m, 'forward_from_chat', None):
+                await c.send_document(tcid, m.document.file_id, caption=ft, file_name=getattr(m.document, 'file_name', None), reply_to_message_id=rtmid)
+            else:
+                # If message is forwarded or we can't be sure, fall back to download+send to avoid source link
+                raise Exception('Not safe to reuse file_id')
+        except Exception:
+            # download then send to avoid source attribution and to regenerate thumbnail / fix rotation
+            try:
+                tmp = None
+                ext = '.mp4' if getattr(m, 'video', None) else '.jpg' if getattr(m, 'photo', None) else '.bin'
+                tmpdir = tempfile.mkdtemp(prefix='tg_send_')
+                tmp = os.path.join(tmpdir, f"{time.time()}{ext}")
+                try:
+                    fpath = await c.download_media(m, file_name=tmp)
+                except Exception:
+                    fpath = await (user_client.download_media(m, file_name=tmp) if user_client else None)
+
+                if not fpath:
+                    return False
+
+                if ext == '.mp4':
+                    mtd = await get_video_metadata(fpath)
+                    dur, h, w = mtd.get('duration'), mtd.get('height'), mtd.get('width')
+                    th = await screenshot(fpath, dur, None)
+                    await c.send_video(tcid, video=fpath, caption=ft, thumb=th, width=w, height=h, duration=dur, reply_to_message_id=rtmid)
+                elif ext.endswith(('.jpg', '.jpeg', '.png')):
+                    await c.send_photo(tcid, photo=fpath, caption=ft, reply_to_message_id=rtmid)
+                else:
+                    await c.send_document(tcid, document=fpath, caption=ft, reply_to_message_id=rtmid)
+
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f'Download-send fallback failed: {e}')
+                return False
         return True
     except Exception as e:
         print(f'Direct send error: {e}')

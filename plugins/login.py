@@ -10,7 +10,7 @@ import os
 from config import API_HASH, API_ID
 from shared_client import app as bot
 from utils.func import save_user_session, get_user_data, remove_user_session, save_user_bot, remove_user_bot
-from utils.encrypt import ecs, dcs
+from utils.encrypt import encrypt_str, decrypt_str
 from plugins.batch import UB, UC
 from utils.custom_filters import login_in_progress, set_user_step, get_user_step
 logging.basicConfig(level=logging.INFO)
@@ -142,7 +142,7 @@ async def handle_login_steps(client, message):
                 await edit_message_safely(status_msg, '🔄 **正在验证代码...**')
                 await temp_client.sign_in(phone, phone_code_hash, code)
                 session_string = await temp_client.export_session_string()
-                encrypted_session = ecs(session_string)
+                encrypted_session = encrypt_str(session_string)
                 await save_user_session(user_id, encrypted_session)
                 await temp_client.disconnect()
                 temp_status_msg = login_cache[user_id]['status_msg']
@@ -170,7 +170,7 @@ async def handle_login_steps(client, message):
                     )
                 await temp_client.check_password(text)
                 session_string = await temp_client.export_session_string()
-                encrypted_session = ecs(session_string)
+                encrypted_session = encrypt_str(session_string)
                 await save_user_session(user_id, encrypted_session)
                 await temp_client.disconnect()
                 temp_status_msg = login_cache[user_id]['status_msg']
@@ -236,7 +236,7 @@ async def logout_command(client, message):
                 '❌ **未找到活跃的 Session 会话。**')
             return
         encss = session_data['session_string']
-        session_string = dcs(encss)
+        session_string = decrypt_str(encss)
         temp_client = Client(f'temp_logout_{user_id}', api_id=API_ID,
             api_hash=API_HASH, session_string=session_string)
         try:

@@ -26,14 +26,22 @@ BOT_TOKEN    = os.getenv("BOT_TOKEN", "")
 REDIS_URL    = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # ─── OWNER / CONTROL SETTINGS ───────────────────────────────────────────────────
-OWNER_ID     = list(map(int, os.getenv("OWNER_ID", "831748654").split()))  # space-separated list
+OWNER_ID_RAW = os.getenv("OWNER_ID")
+if not OWNER_ID_RAW:
+    raise RuntimeError("OWNER_ID is required. Set OWNER_ID in your .env as space-separated Telegram IDs.")
+OWNER_ID = list(map(int, OWNER_ID_RAW.split()))  # space-separated list
 STRING       = os.getenv("STRING", None)  # optional session string
 LOG_GROUP    = int(os.getenv("LOG_GROUP", "-1003955968893"))
 FORCE_SUB    = int(os.getenv("FORCE_SUB", "-1001484083549"))
 
 # ─── SECURITY KEYS ──────────────────────────────────────────────────────────────
-MASTER_KEY   = os.getenv("MASTER_KEY", "gK8HzLfT9QpViJcYeB5wRa3DmN7P2xUq")  # session encryption
-IV_KEY       = os.getenv("IV_KEY", "s7Yx5CpVmE3F")  # decryption key
+MASTER_KEY = os.getenv("MASTER_KEY")
+if not MASTER_KEY:
+    raise RuntimeError("MASTER_KEY is required. Set MASTER_KEY in your .env for session encryption.")
+
+IV_KEY = os.getenv("IV_KEY")
+if not IV_KEY:
+    raise RuntimeError("IV_KEY is required. Set IV_KEY in your .env for session encryption.")
 
 # ─── COOKIES HANDLING ───────────────────────────────────────────────────────────
 YT_COOKIES   = os.getenv("YT_COOKIES", YTUB_COOKIES)

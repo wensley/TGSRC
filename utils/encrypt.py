@@ -1,40 +1,54 @@
-# crypto_ops.py
-from cryptography.hazmat.primitives import hashes as hsh
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as PBK
-from cryptography.hazmat.primitives.ciphers import Cipher as Cp, algorithms as alg, modes as md
-import base64 as b64
-import os as osy
-from config import MASTER_KEY as M1, IV_KEY as I1
+"""
+utils.encrypt
+简洁的 AES-256-GCM 加密/解密工具。
+注意：MASTER_KEY 与 IV_KEY 应由环境变量提供（见 `.env`）。
+"""
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import base64
+import os
+from config import MASTER_KEY as MASTER_KEY_ENV, IV_KEY as IV_KEY_ENV
 
-def dyk(pwd=M1, slt=I1, l=16):
-    pw = pwd.encode()
-    sl = slt.encode()
-    kdf = PBK(
-        algorithm=hsh.SHA256(),
-        length=l,
+
+def derive_key(password: str = MASTER_KEY_ENV, salt: str = IV_KEY_ENV, length: int = 32, iterations: int = 300000) -> bytes:
+    """Derive a symmetric key from password+salt using PBKDF2-HMAC-SHA256."""
+    pw = password.encode()
+    sl = salt.encode()
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=length,
         salt=sl,
-        iterations=100000,
+        iterations=iterations,
     )
     return kdf.derive(pw)
 
-def ecs(s):
-    k = dyk()
-    n = osy.urandom(12) 
-    cp = Cp(alg.AES(k), md.GCM(n))
-    enc = cp.encryptor()
-    p = s.encode()
-    ct = enc.update(p) + enc.finalize()
-    tg = enc.tag
-    encd = b64.b64encode(n + tg + ct).decode()
-    return encd
 
-def dcs(ed):
-    k = dyk()
-    dat = b64.b64decode(ed.encode())
-    n = dat[:12]
-    tg = dat[12:28]
-    ct = dat[28:]
-    cp = Cp(alg.AES(k), md.GCM(n, tg))
-    dec = cp.decryptor()
-    res = dec.update(ct) + dec.finalize()
-    return res.decode()
+def encrypt_str(plain_text: str) -> str:
+    """Encrypt a UTF-8 string and return base64(nonce + tag + ciphertext)."""
+    key = derive_key()
+    nonce = os.urandom(12)
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
+    encryptor = cipher.encryptor()
+    pt = plain_text.encode()
+    ct = encryptor.update(pt) + encryptor.finalize()
+    tag = encryptor.tag
+    return base64.b64encode(nonce + tag + ct).decode()
+
+
+def decrypt_str(enc_b64: str) -> str:
+    """Decrypt base64(nonce + tag + ciphertext) and return UTF-8 string."""
+    key = derive_key()
+    data = base64.b64decode(enc_b64.encode())
+    nonce = data[:12]
+    tag = data[12:28]
+    ct = data[28:]
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag))
+    decryptor = cipher.decryptor()
+    pt = decryptor.update(ct) + decryptor.finalize()
+    return pt.decode()
+
+# Backwards compatibility aliases (old short names)
+dyk = derive_key
+ecs = encrypt_str
+dcs = decrypt_str

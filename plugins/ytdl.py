@@ -21,19 +21,46 @@ import random
 import string
 import requests
 import logging
-import time
 import math
-from shared_client import client, app
-from telethon import events
-from telethon.sync import TelegramClient
-from telethon.tl.types import DocumentAttributeVideo
+try:
+    from shared_client import client, app
+except Exception:
+    client = None
+    app = None
+
+try:
+    from telethon import events
+    from telethon.sync import TelegramClient
+    from telethon.tl.types import DocumentAttributeVideo
+    from telethon.tl.functions.messages import EditMessageRequest
+except Exception:
+    events = None
+    TelegramClient = None
+    DocumentAttributeVideo = None
+    EditMessageRequest = None
+try:
+    from yt_dlp.utils import ExtractorError, DownloadError
+except Exception:
+    class ExtractorError(Exception):
+        pass
+    class DownloadError(Exception):
+        pass
 from utils.func import get_video_metadata, screenshot
-from telethon.tl.functions.messages import EditMessageRequest
-from devgagantools import fast_upload
+try:
+    from devgagantools import fast_upload
+except Exception:
+    def fast_upload(*args, **kwargs):
+        raise NotImplementedError("fast_upload is not available in test environment")
 from concurrent.futures import ThreadPoolExecutor
-import aiohttp 
+try:
+    import aiohttp
+except Exception:
+    aiohttp = None
 import logging
-import aiofiles
+try:
+    import aiofiles
+except Exception:
+    aiofiles = None
 from config import YT_COOKIES, INSTA_COOKIES
 from mutagen.id3 import ID3, TIT2, TPE1, COMM, APIC
 from mutagen.mp3 import MP3
@@ -45,6 +72,31 @@ logger = logging.getLogger(__name__)
 thread_pool = ThreadPoolExecutor()
 ongoing_downloads = {}
 
+
+async def try_handle_incoming_link(c, m):
+    # Auto-detect and handle social links in plain messages
+    text = getattr(m, 'text', '') or getattr(m, 'caption', '') or ''
+    if not text:
+        return False
+
+    # Simple heuristics for common platforms
+    platforms = ["youtube.com", "youtu.be", "twitter.com", "x.com", "instagram.com", "tiktok.com", "open.spotify.com"]
+    if any(p in text for p in platforms):
+        # prefer explicit commands if user added them, otherwise act as /dl
+        url = None
+        for token in text.split():
+            if token.startswith('http'):
+                url = token
+                break
+        if not url:
+            return False
+
+        user_id = getattr(getattr(m, 'from_user', None), 'id', None)
+        # run in background to avoid blocking
+        asyncio.create_task(process_audio(c, m, url, cookies_env_var=None))
+        return True
+    return False
+
 async def send_dl_log(text):
     try:
         from shared_client import app as _bot
@@ -53,24 +105,64 @@ async def send_dl_log(text):
         logger.warning(f"Failed to send log to LOG_GROUP: {e}")
 
 def d_thumbnail(thumbnail_url, save_path):
-    try:
-        response = requests.get(thumbnail_url, stream=True)
-        response.raise_for_status()
-        with open(save_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return save_path
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to download thumbnail: {e}")
-        return None
+    return http_get_sync_with_retries(thumbnail_url, save_path)
  
  
 async def download_thumbnail_async(url, path):
+    return await http_get_async_with_retries(url, path)
+
+
+def http_get_sync_with_retries(url, save_path, retries=3, timeout=10, backoff=1.0):
+    try:
+        import requests
+    except Exception:
+        logger.warning("requests not available; cannot download thumbnail")
+        return None
+
+    session = requests.Session()
+    for attempt in range(1, retries + 1):
+        try:
+            resp = session.get(url, stream=True, timeout=timeout)
+            resp.raise_for_status()
+            with open(save_path, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return save_path
+        except requests.RequestException as e:
+            logger.warning(f"Attempt {attempt} failed to download {url}: {e}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+                continue
+            logger.error(f"Failed to download {url} after {retries} attempts: {e}")
+            return None
+
+
+async def http_get_async_with_retries(url, save_path, retries=3, timeout=10, backoff=1.0):
+    try:
+        import aiohttp
+    except Exception:
+        logger.warning("aiohttp not available; cannot download async thumbnail")
+        return None
+
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                with open(path, 'wb') as f:
-                    f.write(await response.read())
+        for attempt in range(1, retries + 1):
+            try:
+                async with session.get(url, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.read()
+                        with open(save_path, 'wb') as f:
+                            f.write(data)
+                        return save_path
+                    else:
+                        raise Exception(f"Status {response.status}")
+            except Exception as e:
+                logger.warning(f"Async attempt {attempt} failed for {url}: {e}")
+                if attempt < retries:
+                    await asyncio.sleep(backoff * attempt)
+                    continue
+                logger.error(f"Async download failed for {url} after {retries} attempts: {e}")
+                return None
  
  
 async def extract_audio_async(ydl_opts, url):
@@ -116,6 +208,14 @@ async def process_audio(client, event, url, cookies_env_var=None):
     try:
         try:
             info_dict = await extract_audio_async(ydl_opts, url)
+        except (ExtractorError, DownloadError) as e:
+            msg = str(e)
+            logger.warning(f"yt_dlp extractor/download error: {msg}")
+            if 'No video could be found' in msg or 'No video' in msg or 'No audio' in msg:
+                await progress_message.edit("❌ 未找到可下载的媒体：源消息不包含可下载的视频或音频。")
+                return
+            # let other extractor errors bubble up to be handled below
+            raise
         except Exception as e:
             if "Netscape format cookies file" in str(e):
                 logger.warning("Invalid cookies detected, retrying without cookies.")
@@ -152,12 +252,17 @@ async def process_audio(client, event, url, cookies_env_var=None):
                 thumbnail_url = info_dict.get('thumbnail')
                 if thumbnail_url:
                     thumbnail_path = os.path.join(tempfile.gettempdir(), "thumb.jpg")
-                    asyncio.run(download_thumbnail_async(thumbnail_url, thumbnail_path))
-                    with open(thumbnail_path, 'rb') as img:
-                        audio_file.tags["APIC"] = APIC(
-                            encoding=3, mime='image/jpeg', type=3, desc='Cover', data=img.read()
-                        )
-                    os.remove(thumbnail_path)
+                    # Use synchronous download here to avoid nested event loop or asyncio.run in threads
+                    downloaded = d_thumbnail(thumbnail_url, thumbnail_path)
+                    if downloaded:
+                        with open(thumbnail_path, 'rb') as img:
+                            audio_file.tags["APIC"] = APIC(
+                                encoding=3, mime='image/jpeg', type=3, desc='Cover', data=img.read()
+                            )
+                        try:
+                            os.remove(thumbnail_path)
+                        except Exception:
+                            pass
                 audio_file.save()
  
             await asyncio.to_thread(edit_metadata)
@@ -186,41 +291,54 @@ async def process_audio(client, event, url, cookies_env_var=None):
  
     except Exception as e:
         logger.exception("Error during audio extraction or upload")
-        await event.reply(f"❌ **发生错误:** `{e}`")
+        try:
+            await progress_message.edit(f"❌ **发生错误:** `{e}`")
+        except Exception:
+            try:
+                await event.reply(f"❌ **发生错误:** `{e}`")
+            except Exception:
+                pass
     finally:
         if os.path.exists(download_path):
             os.remove(download_path)
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
+        # Ensure progress message is removed so UI doesn't stay stuck
+        try:
+            if progress_message:
+                await progress_message.delete()
+        except Exception:
+            pass
  
-@client.on(events.NewMessage(pattern="/adl"))
-async def adl_handler(event):
-    user_id = event.sender_id
-    if user_id in ongoing_downloads:
-        await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
-        return
+if client is not None and events is not None:
+    @client.on(events.NewMessage(pattern="/adl"))
+    async def adl_handler(event):
+        user_id = event.sender_id
+        if user_id in ongoing_downloads:
+            await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
+            return
 
-    if len(event.message.text.split()) < 2:
-        await event.reply("❌ **格式错误！**\n使用方法: `/adl [视频链接]`")
-        return    
+        if len(event.message.text.split()) < 2:
+            await event.reply("❌ **格式错误！**\n使用方法: `/adl [视频链接]`")
+            return    
 
-    url = event.message.text.split()[1]
-    ongoing_downloads[user_id] = True
-    await send_dl_log(f"⬇️ **开始下载**\n用户: `{user_id}`\n链接: `{url}`")
+        url = event.message.text.split()[1]
+        ongoing_downloads[user_id] = True
+        await send_dl_log(f"⬇️ **开始下载**\n用户: `{user_id}`\n链接: `{url}`")
 
-    try:
-        if "open.spotify.com" in url:
-            await process_spotify_audio(client, event, url)
-        elif "instagram.com" in url:
-            await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
-        elif "youtube.com" in url or "youtu.be" in url:
-            await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
-        else:
-            await process_audio(client, event, url)
-    except Exception as e:
-        await event.reply(f"❌ **发生错误:** `{str(e)}`")
-    finally:
-        ongoing_downloads.pop(user_id, None)
+        try:
+            if "open.spotify.com" in url:
+                await process_spotify_audio(client, event, url)
+            elif "instagram.com" in url:
+                await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
+            elif "youtube.com" in url or "youtu.be" in url:
+                await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
+            else:
+                await process_audio(client, event, url)
+        except Exception as e:
+            await event.reply(f"❌ **发生错误:** `{str(e)}`")
+        finally:
+            ongoing_downloads.pop(user_id, None)
 
 
 async def process_spotify_audio(client, event, url):
@@ -304,63 +422,65 @@ def download_video(url, ydl_opts):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
  
-@client.on(events.NewMessage(pattern="/dl"))
-async def dl_handler(event):
-    user_id = event.sender_id
-    if user_id in ongoing_downloads:
-        await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
-        return
+if client is not None and events is not None:
+    @client.on(events.NewMessage(pattern="/dl"))
+    async def dl_handler(event):
+        user_id = event.sender_id
+        if user_id in ongoing_downloads:
+            await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
+            return
  
-    if len(event.message.text.split()) < 2:
-        await event.reply("❌ **格式错误！**\n使用方法: `/dl [视频链接]`")
-        return    
+        if len(event.message.text.split()) < 2:
+            await event.reply("❌ **格式错误！**\n使用方法: `/dl [视频链接]`")
+            return    
  
-    url = event.message.text.split()[1]
-    ongoing_downloads[user_id] = True
-    await send_dl_log(f"⬇️ **开始下载音频**\n用户: `{user_id}`\n链接: `{url}`")
+        url = event.message.text.split()[1]
+        ongoing_downloads[user_id] = True
+        await send_dl_log(f"⬇️ **开始下载音频**\n用户: `{user_id}`\n链接: `{url}`")
 
-    try:
-        if "open.spotify.com" in url:
-            await process_spotify_audio(client, event, url)
-        elif "instagram.com" in url:
-            await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
-        elif "youtube.com" in url or "youtu.be" in url:
-            await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
-        else:
-            await process_audio(client, event, url)
-    except Exception as e:
-        await event.reply(f"❌ **发生错误:** `{str(e)}`")
-        await send_dl_log(f"❌ **音频下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
-    finally:
-        ongoing_downloads.pop(user_id, None)
+        try:
+            if "open.spotify.com" in url:
+                await process_spotify_audio(client, event, url)
+            elif "instagram.com" in url:
+                await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
+            elif "youtube.com" in url or "youtu.be" in url:
+                await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
+            else:
+                await process_audio(client, event, url)
+        except Exception as e:
+            await event.reply(f"❌ **发生错误:** `{str(e)}`")
+            await send_dl_log(f"❌ **音频下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
+        finally:
+            ongoing_downloads.pop(user_id, None)
 
-@client.on(events.NewMessage(pattern="/music"))
-async def music_handler(event):
-    user_id = event.sender_id
-    if user_id in ongoing_downloads:
-        await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
-        return
+if client is not None and events is not None:
+    @client.on(events.NewMessage(pattern="/music"))
+    async def music_handler(event):
+        user_id = event.sender_id
+        if user_id in ongoing_downloads:
+            await event.reply("⚠️ **您当前已有正在运行的任务，请稍候。**")
+            return
     
-    args = event.message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await event.reply("❌ **请输入歌名或关键词！**\n使用方法: `/music [歌名]`\n例如: `/music 求佛`")
-        return
+        args = event.message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await event.reply("❌ **请输入歌名或关键词！**\n使用方法: `/music [歌名]`\n例如: `/music 求佛`")
+            return
     
-    query = args[1]
-    ongoing_downloads[user_id] = True
-    await send_dl_log(f"🎵 **音乐搜索**\n用户: `{user_id}`\n关键词: `{query}`")
+        query = args[1]
+        ongoing_downloads[user_id] = True
+        await send_dl_log(f"🎵 **音乐搜索**\n用户: `{user_id}`\n关键词: `{query}`")
 
-    try:
-        if "open.spotify.com" in query:
-            await process_spotify_audio(client, event, query)
-        else:
-            search_url = f"ytsearch1:{query}"
-            await process_audio(client, event, search_url, cookies_env_var=YT_COOKIES)
-    except Exception as e:
-        await event.reply(f"❌ **发生错误:** `{str(e)}`")
-        await send_dl_log(f"❌ **音乐搜索失败**\n用户: `{user_id}`\n关键词: `{query}`\n错误: `{str(e)[:100]}`")
-    finally:
-        ongoing_downloads.pop(user_id, None)
+        try:
+            if "open.spotify.com" in query:
+                await process_spotify_audio(client, event, query)
+            else:
+                search_url = f"ytsearch1:{query}"
+                await process_audio(client, event, search_url, cookies_env_var=YT_COOKIES)
+        except Exception as e:
+            await event.reply(f"❌ **发生错误:** `{str(e)}`")
+            await send_dl_log(f"❌ **音乐搜索失败**\n用户: `{user_id}`\n关键词: `{query}`\n错误: `{str(e)[:100]}`")
+        finally:
+            ongoing_downloads.pop(user_id, None)
  
  
 user_progress = {}
@@ -391,11 +511,12 @@ def progress_callback(done, total, user_id):
      
     speed = done - user_data['previous_done']
     elapsed_time = time.time() - user_data['previous_time']
- 
+
     if elapsed_time > 0:
-        speed_bps = speed / elapsed_time   
-        speed_mbps = (speed_bps * 8) / (1024 * 1024)   
+        speed_bps = speed / elapsed_time
+        speed_mbps = (speed_bps * 8) / (1024 * 1024)
     else:
+        speed_bps = 0
         speed_mbps = 0
  
      
@@ -576,35 +697,54 @@ async def process_video(client, event, url, cookies_env_var, check_duration_and_
         if thumbnail_file and os.path.exists(thumbnail_file):
             os.remove(thumbnail_file)
 
-from pyrogram import filters
-from shared_client import app as pyro_app
+try:
+    from pyrogram import filters
+    from shared_client import app as pyro_app
+except Exception:
+    filters = None
+    pyro_app = None
 
-@pyro_app.on_message(filters.regex(r"https?://(www\.)?(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|twitter\.com|x\.com|facebook\.com|terabox\.com|\w+\.spotify\.com)") & filters.private)
-async def auto_ytdl(c, m):
-    user_id = m.from_user.id
-    if user_id in ongoing_downloads:
-        await m.reply_text("⚠️ **您当前已有正在运行的任务，请稍候。**")
-        return
-    
-    url = m.text
-    ongoing_downloads[user_id] = True
-    await send_dl_log(f"⬇️ **自动检测下载**\n用户: `{user_id}`\n链接: `{url}`")
+if pyro_app is not None and filters is not None:
+    @pyro_app.on_message(filters.regex(r"https?://(www\.)?(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|twitter\.com|x\.com|facebook\.com|terabox\.com|\w+\.spotify\.com)") & filters.private)
+    async def auto_ytdl(c, m):
+        user_id = getattr(getattr(m, 'from_user', None), 'id', None)
+        if user_id is None:
+            return
+        if user_id in ongoing_downloads:
+            await m.reply_text("⚠️ **您当前已有正在运行的任务，请稍候。**")
+            return
 
-    try:
-        from shared_client import client as telethon_client
-        if "open.spotify.com" in url:
-            await process_spotify_audio(telethon_client, m, url)
-        elif "instagram.com" in url:
-            await process_video(telethon_client, m, url, INSTA_COOKIES, check_duration_and_size=False)
-        elif "youtube.com" in url or "youtu.be" in url:
-            await process_video(telethon_client, m, url, YT_COOKIES, check_duration_and_size=True)
-        else:
-            await process_video(telethon_client, m, url, None, check_duration_and_size=False)
-        await send_dl_log(f"✅ **下载完成**\n用户: `{user_id}`\n链接: `{url}`")
-    except Exception as e:
-        await send_dl_log(f"❌ **自动下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
-    finally:
-        ongoing_downloads.pop(user_id, None)
+        url = getattr(m, 'text', '')
+        ongoing_downloads[user_id] = True
+        await send_dl_log(f"⬇️ **自动检测下载**\n用户: `{user_id}`\n链接: `{url}`")
+
+        try:
+            from shared_client import client as telethon_client
+            if "open.spotify.com" in url:
+                await process_spotify_audio(telethon_client, m, url)
+            elif "instagram.com" in url:
+                await process_video(telethon_client, m, url, INSTA_COOKIES, check_duration_and_size=False)
+            elif "youtube.com" in url or "youtu.be" in url:
+                await process_video(telethon_client, m, url, YT_COOKIES, check_duration_and_size=True)
+            else:
+                await process_video(telethon_client, m, url, None, check_duration_and_size=False)
+            await send_dl_log(f"✅ **下载完成**\n用户: `{user_id}`\n链接: `{url}`")
+        except Exception as e:
+            await send_dl_log(f"❌ **自动下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
+        finally:
+            ongoing_downloads.pop(user_id, None)
+
+
+# Also register a plain-text link detector to auto-handle links without /dl
+if pyro_app is not None and filters is not None:
+    @pyro_app.on_message(filters.text & filters.private)
+    async def plain_link_detector(c, m):
+        try:
+            handled = await try_handle_incoming_link(c, m)
+            if handled:
+                await m.reply_text('🔗 Detected link and started processing. Use /cancel to stop.')
+        except Exception:
+            pass
 
 async def split_and_upload_file(app, sender, file_path, caption):
     if not os.path.exists(file_path):
