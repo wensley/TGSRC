@@ -529,11 +529,11 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
                                         height=h if mtype == 'video' else None,
                                         width=w if mtype == 'video' else None,
                                         caption=ft if m.caption and mtype not in ['video_note', 'voice'] else None, 
-                                        reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st, extra, uid))
+                                        reply_to_message_id=None, progress=prog, progress_args=(c, d, p.id, st, extra, uid))
                         break
                 else:
                     sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
-                                                reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st, extra, uid))
+                                                reply_to_message_id=None, progress=prog, progress_args=(c, d, p.id, st, extra, uid))
                 
                 await c.copy_message(d, LOG_GROUP, sent.id)
                 os.remove(f)
@@ -569,6 +569,25 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
                         await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
                                             progress=prog, progress_args=(c, d, p.id, st, extra, uid), 
                                             reply_to_message_id=rtmid)
+                    elif m.audio:
+                        await c.send_audio(tcid, audio=f, caption=ft if m.caption else None,
+                                          duration=m.audio.duration or None,
+                                          performer=m.audio.performer or None,
+                                          title=m.audio.title or None,
+                                          progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                          reply_to_message_id=rtmid)
+                    elif m.voice:
+                        await c.send_voice(tcid, voice=f,
+                                          progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                          reply_to_message_id=rtmid)
+                    elif m.video_note:
+                        await c.send_video_note(tcid, video_note=f,
+                                               progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                               reply_to_message_id=rtmid)
+                    elif m.sticker:
+                        await c.send_sticker(tcid, sticker=f,
+                                            progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                            reply_to_message_id=rtmid)
                     else:
                         await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
                                             progress=prog, progress_args=(c, d, p.id, st, extra, uid), 
@@ -581,21 +600,43 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
                             file_ext = os.path.splitext(f)[1].lower()
                             video_exts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
                             if m.video or (m.document and file_ext in video_exts):
-                                dur = None
+                                dur = w = h = None
                                 try:
                                     mtd = await get_video_metadata(f)
-                                    dur = mtd.get('duration') if mtd else None
+                                    if mtd:
+                                        dur = mtd.get('duration')
+                                        w = mtd.get('width')
+                                        h = mtd.get('height')
                                 except Exception:
-                                    dur = None
+                                    pass
                                 th = await screenshot(f, dur or 0, d)
                                 await u.send_video(tcid, video=f, caption=ft if m.caption else None,
-                                                thumb=th, duration=dur, supports_streaming=True,
+                                                thumb=th, width=w, height=h, duration=dur, supports_streaming=True,
                                                 progress=prog, progress_args=(c, d, p.id, st, extra, uid),
                                                 reply_to_message_id=rtmid)
                             elif m.photo:
                                 await u.send_photo(tcid, photo=f, caption=ft if m.caption else None,
                                                 progress=prog, progress_args=(c, d, p.id, st, extra, uid),
                                                 reply_to_message_id=rtmid)
+                            elif m.audio:
+                                await u.send_audio(tcid, audio=f, caption=ft if m.caption else None,
+                                                  duration=m.audio.duration or None,
+                                                  performer=m.audio.performer or None,
+                                                  title=m.audio.title or None,
+                                                  progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                                  reply_to_message_id=rtmid)
+                            elif m.voice:
+                                await u.send_voice(tcid, voice=f,
+                                                  progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                                  reply_to_message_id=rtmid)
+                            elif m.video_note:
+                                await u.send_video_note(tcid, video_note=f,
+                                                       progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                                       reply_to_message_id=rtmid)
+                            elif m.sticker:
+                                await u.send_sticker(tcid, sticker=f,
+                                                    progress=prog, progress_args=(c, d, p.id, st, extra, uid),
+                                                    reply_to_message_id=rtmid)
                             else:
                                 await u.send_document(tcid, document=f, caption=ft if m.caption else None,
                                                     progress=prog, progress_args=(c, d, p.id, st, extra, uid),
@@ -861,26 +902,29 @@ async def text_handler(c, m):
                                 else:
                                     media.append(InputMediaDocument(f_path, caption=caption))
                             
-                                if media:
-                                    for tcid, rtmid in targets:
-                                        try:
-                                            await ubot.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                        except Exception as ge:
-                                            print(f"Send media group to {tcid} via bot failed: {ge}")
-                                            try:
-                                                if uc:
-                                                    await uc.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                            except Exception as ue:
-                                                print(f"Send media group to {tcid} via user failed: {ue}")
-                                await pt.edit(f'✅ 媒体组合并发送成功！')
-                                for f, _ in downloaded_files:
-                                    if os.path.exists(f): os.remove(f)
-                                for t in thumbs_to_cleanup:
+                            # 所有文件收集完毕后，统一发送媒体组（必须在 for 循环外部）
+                            if media:
+                                for tcid, rtmid in targets:
                                     try:
-                                        os.remove(t)
-                                    except Exception:
-                                        pass
-                                return
+                                        await ubot.send_media_group(tcid, media, reply_to_message_id=rtmid)
+                                    except Exception as ge:
+                                        print(f"Send media group to {tcid} via bot failed: {ge}")
+                                        try:
+                                            if uc:
+                                                await uc.send_media_group(tcid, media, reply_to_message_id=rtmid)
+                                        except Exception as ue:
+                                            print(f"Send media group to {tcid} via user failed: {ue}")
+                                await pt.edit(f'✅ 媒体组合并发送成功！')
+                            else:
+                                await pt.edit(f'没有可发送的媒体文件。')
+                            for f, _ in downloaded_files:
+                                if os.path.exists(f): os.remove(f)
+                            for t in thumbs_to_cleanup:
+                                try:
+                                    os.remove(t)
+                                except Exception:
+                                    pass
+                            return
                     except Exception as ge:
                         print(f"Group download/upload error: {ge}")
                         for f, _ in downloaded_files:

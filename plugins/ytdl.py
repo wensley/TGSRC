@@ -73,30 +73,6 @@ thread_pool = ThreadPoolExecutor()
 ongoing_downloads = {}
 
 
-async def try_handle_incoming_link(c, m):
-    # Auto-detect and handle social links in plain messages
-    text = getattr(m, 'text', '') or getattr(m, 'caption', '') or ''
-    if not text:
-        return False
-
-    # Simple heuristics for common platforms
-    platforms = ["youtube.com", "youtu.be", "twitter.com", "x.com", "instagram.com", "tiktok.com", "open.spotify.com"]
-    if any(p in text for p in platforms):
-        # prefer explicit commands if user added them, otherwise act as /dl
-        url = None
-        for token in text.split():
-            if token.startswith('http'):
-                url = token
-                break
-        if not url:
-            return False
-
-        user_id = getattr(getattr(m, 'from_user', None), 'id', None)
-        # run in background to avoid blocking
-        asyncio.create_task(process_audio(c, m, url, cookies_env_var=None))
-        return True
-    return False
-
 async def send_dl_log(text):
     try:
         from shared_client import app as _bot
@@ -721,7 +697,7 @@ except Exception:
     pyro_app = None
 
 if pyro_app is not None and filters is not None:
-    @pyro_app.on_message(filters.regex(r"https?://(www\.)?(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|twitter\.com|x\.com|facebook\.com|terabox\.com|\w+\.spotify\.com)") & filters.private)
+    @pyro_app.on_message(filters.regex(r"https?://(www\.)?(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|twitter\.com|x\.com|facebook\.com|reddit\.com|terabox\.com|\w+\.spotify\.com)") & filters.private)
     async def auto_ytdl(c, m):
         user_id = getattr(getattr(m, 'from_user', None), 'id', None)
         if user_id is None:
@@ -750,17 +726,6 @@ if pyro_app is not None and filters is not None:
         finally:
             ongoing_downloads.pop(user_id, None)
 
-
-# Also register a plain-text link detector to auto-handle links without /dl
-if pyro_app is not None and filters is not None:
-    @pyro_app.on_message(filters.text & filters.private)
-    async def plain_link_detector(c, m):
-        try:
-            handled = await try_handle_incoming_link(c, m)
-            if handled:
-                await m.reply_text('🔗 Detected link and started processing. Use /cancel to stop.')
-        except Exception:
-            pass
 
 async def split_and_upload_file(app, sender, file_path, caption):
     if not os.path.exists(file_path):
