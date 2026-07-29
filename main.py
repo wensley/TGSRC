@@ -37,6 +37,15 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         try:
+            # Gracefully shut down async generators
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            # Cancel all pending tasks before closing the loop
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # Let cancelled tasks finish winding down
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
         except Exception:
             pass
