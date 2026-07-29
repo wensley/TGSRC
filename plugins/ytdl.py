@@ -211,8 +211,24 @@ async def process_audio(client, event, url, cookies_env_var=None):
         except (ExtractorError, DownloadError) as e:
             msg = str(e)
             logger.warning(f"yt_dlp extractor/download error: {msg}")
-            if 'No video could be found' in msg or 'No video' in msg or 'No audio' in msg:
-                await progress_message.edit("❌ 未找到可下载的媒体：源消息不包含可下载的视频或音频。")
+            lower_msg = msg.lower()
+            no_media_msgs = [
+                'no video could be found',
+                'no video',
+                'no audio',
+                'unable to extract',
+                'could not find',
+                'not contain',
+                'no streams found',
+            ]
+            if any(token in lower_msg for token in no_media_msgs):
+                hint = '该链接可能不包含可下载的视频或音频，或需要登录/授权。'
+                if 'twitter.com' in url or 'x.com' in url:
+                    hint = '此 X/Twitter 帖子可能不包含可下载视频，或该内容受限、只包含 GIF/图片。'
+                try:
+                    await progress_message.edit(f"❌ 未找到可下载的媒体：{hint}")
+                except Exception:
+                    await event.reply(f"❌ 未找到可下载的媒体：{hint}")
                 return
             # let other extractor errors bubble up to be handled below
             raise

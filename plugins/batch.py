@@ -17,6 +17,7 @@ from utils.encrypt import decrypt_str
 from typing import Dict, Any, Optional
 import subprocess
 import shlex
+import shutil
 import tempfile
 
 
@@ -278,25 +279,52 @@ async def send_direct_group(c, messages, tcid, ft=None, rtmid=None, user_client=
 
             from pyrogram.types import InputMediaVideo, InputMediaPhoto, InputMediaDocument
             media = []
+            thumbs_to_cleanup = []
             for fpath, msg in zip(files, messages):
-                if fpath.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
-                    media.append(InputMediaVideo(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
-                elif fpath.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    media.append(InputMediaPhoto(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
+                caption = msg.caption if getattr(msg, 'caption', None) else None
+                lower = fpath.lower()
+                if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
+                    # gather metadata and generate thumbnail
+                    try:
+                        mtd = await get_video_metadata(fpath)
+                        dur = mtd.get('duration') or 0
+                        w = mtd.get('width') or None
+                        h = mtd.get('height') or None
+                        sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
+                        thumb = await screenshot(fpath, dur, sender_id)
+                        if thumb:
+                            thumbs_to_cleanup.append(thumb)
+                        media.append(InputMediaVideo(fpath, caption=caption, thumb=thumb, duration=dur, width=w, height=h))
+                    except Exception:
+                        # fallback: send without extra metadata
+                        media.append(InputMediaVideo(fpath, caption=caption))
+                elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    media.append(InputMediaPhoto(fpath, caption=caption))
                 else:
-                    media.append(InputMediaDocument(fpath, caption=msg.caption if getattr(msg, 'caption', None) else None))
+                    media.append(InputMediaDocument(fpath, caption=caption))
 
             if media:
                 await c.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                # cleanup
+                # cleanup downloaded files and generated thumbs
                 for f in files:
                     try:
                         os.remove(f)
                     except Exception:
                         pass
+                for t in thumbs_to_cleanup:
+                    try:
+                        os.remove(t)
+                    except Exception:
+                        pass
+                shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
             return True
         except Exception as e:
             print(f"send_direct_group download fallback failed: {e}")
+            # ensure temp dir is cleaned up on failure too
+            try:
+                shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
+            except Exception:
+                pass
             return False
     except Exception as e:
         print(f"send_direct_group error: {e}")
@@ -333,7 +361,7 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None, user_client=None):
         try:
             # Prefer copying/using file_id to preserve speed, but avoid forwarding original channel link
             if getattr(m, 'video', None) and not getattr(m, 'forward_from_chat', None):
-                await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
+                await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, supports_streaming=True, reply_to_message_id=rtmid)
             elif getattr(m, 'video_note', None) and not getattr(m, 'forward_from_chat', None):
                 await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
             elif getattr(m, 'voice', None) and not getattr(m, 'forward_from_chat', None):
@@ -369,7 +397,7 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None, user_client=None):
                     mtd = await get_video_metadata(fpath)
                     dur, h, w = mtd.get('duration'), mtd.get('height'), mtd.get('width')
                     th = await screenshot(fpath, dur, None)
-                    await c.send_video(tcid, video=fpath, caption=ft, thumb=th, width=w, height=h, duration=dur, reply_to_message_id=rtmid)
+                    await c.send_video(tcid, video=fpath, caption=ft, thumb=th, width=w, height=h, duration=dur, supports_streaming=True, reply_to_message_id=rtmid)
                 elif ext.endswith(('.jpg', '.jpeg', '.png')):
                     await c.send_photo(tcid, photo=fpath, caption=ft, reply_to_message_id=rtmid)
                 else:
@@ -379,8 +407,14 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None, user_client=None):
                     os.remove(fpath)
                 except Exception:
                     pass
+                shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception as e:
                 print(f'Download-send fallback failed: {e}')
+                # ensure temp dir is cleaned up on failure too
+                try:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                except Exception:
+                    pass
                 return False
         return True
     except Exception as e:
@@ -518,10 +552,13 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
                     file_ext = os.path.splitext(f)[1].lower()
                     if m.video or (m.document and file_ext in video_extensions):
                         mtd = await get_video_metadata(f)
-                        dur, h, w = mtd['duration'], mtd['width'], mtd['height']
-                        th = await screenshot(f, dur, d)
+                        dur = mtd.get('duration') if mtd else None
+                        w = mtd.get('width') if mtd else None
+                        h = mtd.get('height') if mtd else None
+                        th = await screenshot(f, dur or 0, d)
                         await c.send_video(tcid, video=f, caption=ft if m.caption else None, 
                                         thumb=th, width=w, height=h, duration=dur, 
+                                            supports_streaming=True,
                                             progress=prog, progress_args=(c, d, p.id, st, extra, uid), 
                                             reply_to_message_id=rtmid)
                     elif m.photo:
@@ -544,7 +581,15 @@ async def process_msg(c, u, m, d, lt, uid, i, extra=""):
                             file_ext = os.path.splitext(f)[1].lower()
                             video_exts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
                             if m.video or (m.document and file_ext in video_exts):
+                                dur = None
+                                try:
+                                    mtd = await get_video_metadata(f)
+                                    dur = mtd.get('duration') if mtd else None
+                                except Exception:
+                                    dur = None
+                                th = await screenshot(f, dur or 0, d)
                                 await u.send_video(tcid, video=f, caption=ft if m.caption else None,
+                                                thumb=th, duration=dur, supports_streaming=True,
                                                 progress=prog, progress_args=(c, d, p.id, st, extra, uid),
                                                 reply_to_message_id=rtmid)
                             elif m.photo:
@@ -794,28 +839,47 @@ async def text_handler(c, m):
                             
                             from pyrogram.types import InputMediaVideo, InputMediaPhoto, InputMediaDocument
                             media = []
+                            thumbs_to_cleanup = []
                             for f_path, msg in downloaded_files:
-                                if f_path.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
-                                    media.append(InputMediaVideo(f_path, caption=msg.caption))
-                                elif f_path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                                    media.append(InputMediaPhoto(f_path, caption=msg.caption))
-                                else:
-                                    media.append(InputMediaDocument(f_path, caption=msg.caption))
-                            
-                            if media:
-                                for tcid, rtmid in targets:
+                                caption = msg.caption if getattr(msg, 'caption', None) else None
+                                lower = f_path.lower()
+                                if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
                                     try:
-                                        await ubot.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                    except Exception as ge:
-                                        print(f"Send media group to {tcid} via bot failed: {ge}")
+                                        mtd = await get_video_metadata(f_path)
+                                        dur = mtd.get('duration') or None
+                                        w = mtd.get('width') or None
+                                        h = mtd.get('height') or None
+                                        sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
+                                        thumb = await screenshot(f_path, dur or 0, sender_id)
+                                        if thumb:
+                                            thumbs_to_cleanup.append(thumb)
+                                        media.append(InputMediaVideo(f_path, caption=caption, thumb=thumb, duration=dur, width=w, height=h))
+                                    except Exception:
+                                        media.append(InputMediaVideo(f_path, caption=caption))
+                                elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                                    media.append(InputMediaPhoto(f_path, caption=caption))
+                                else:
+                                    media.append(InputMediaDocument(f_path, caption=caption))
+                            
+                                if media:
+                                    for tcid, rtmid in targets:
                                         try:
-                                            if uc:
-                                                await uc.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                        except Exception as ue:
-                                            print(f"Send media group to {tcid} via user failed: {ue}")
+                                            await ubot.send_media_group(tcid, media, reply_to_message_id=rtmid)
+                                        except Exception as ge:
+                                            print(f"Send media group to {tcid} via bot failed: {ge}")
+                                            try:
+                                                if uc:
+                                                    await uc.send_media_group(tcid, media, reply_to_message_id=rtmid)
+                                            except Exception as ue:
+                                                print(f"Send media group to {tcid} via user failed: {ue}")
                                 await pt.edit(f'✅ 媒体组合并发送成功！')
                                 for f, _ in downloaded_files:
                                     if os.path.exists(f): os.remove(f)
+                                for t in thumbs_to_cleanup:
+                                    try:
+                                        os.remove(t)
+                                    except Exception:
+                                        pass
                                 return
                     except Exception as ge:
                         print(f"Group download/upload error: {ge}")

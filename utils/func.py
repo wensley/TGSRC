@@ -220,12 +220,14 @@ async def process_text_with_rules(user_id, text):
 
 
 async def screenshot(video: str, duration: int, sender: str) -> str | None:
+    # Prefer existing per-user thumbnail if present
     existing_screenshot = f"{sender}.jpg"
-    if os.path.exists(existing_screenshot):
+    if sender and os.path.exists(existing_screenshot):
         return existing_screenshot
 
+    # Write screenshots to system temp dir to avoid CWD/permission issues
     time_stamp = hhmmss(duration // 2)
-    output_file = datetime.now().isoformat("_", "seconds") + ".jpg"
+    output_file = os.path.join(tempfile.gettempdir(), datetime.now().isoformat("_", "seconds") + ".jpg")
 
     cmd = [
         "ffmpeg",
@@ -252,7 +254,8 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
 
 
 async def get_video_metadata(file_path):
-    default_values = {'width': 1, 'height': 1, 'duration': 1}
+    # Return None values on failure so callers can choose sensible fallbacks
+    default_values = {'width': None, 'height': None, 'duration': None}
     loop = asyncio.get_event_loop()
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     
