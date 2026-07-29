@@ -419,6 +419,28 @@ async def fetch_video_info(url, ydl_opts, progress_message, check_duration_and_s
 def download_video(url, ydl_opts):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
+
+
+def video_download_options(download_path, cookiefile=None):
+    """Return extractor options that work for separate-stream social videos too."""
+    return {
+        'outtmpl': download_path,
+        # Social platforms often expose video and audio as separate streams.  ``best``
+        # can select a video-only format, while this merges the best compatible pair.
+        'format': 'bestvideo*+bestaudio/best',
+        'merge_output_format': 'mp4',
+        'cookiefile': cookiefile,
+        'writethumbnail': True,
+        'noplaylist': True,
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 30,
+        'verbose': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+    }
  
 if client is not None and events is not None:
     @client.on(events.NewMessage(pattern="/dl"))
@@ -440,11 +462,11 @@ if client is not None and events is not None:
             if "open.spotify.com" in url:
                 await process_spotify_audio(client, event, url)
             elif "instagram.com" in url:
-                await process_audio(client, event, url, cookies_env_var=INSTA_COOKIES)
+                await process_video(client, event, url, INSTA_COOKIES, check_duration_and_size=False)
             elif "youtube.com" in url or "youtu.be" in url:
-                await process_audio(client, event, url, cookies_env_var=YT_COOKIES)
+                await process_video(client, event, url, YT_COOKIES, check_duration_and_size=True)
             else:
-                await process_audio(client, event, url)
+                await process_video(client, event, url, None, check_duration_and_size=False)
         except Exception as e:
             await event.reply(f"❌ **发生错误:** `{str(e)}`")
             await send_dl_log(f"❌ **音频下载失败**\n用户: `{user_id}`\n链接: `{url}`\n错误: `{str(e)[:100]}`")
@@ -572,15 +594,7 @@ async def process_video(client, event, url, cookies_env_var, check_duration_and_
     metadata = {'width': None, 'height': None, 'duration': None, 'thumbnail': None}
  
      
-    ydl_opts = {
-        'outtmpl': download_path,
-        'format': 'best',
-        'cookiefile': temp_cookie_path if temp_cookie_path else None,
-        'writethumbnail': True,
-        'verbose': True,
-        'ffmpeg_location': '/usr/bin',
-        'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
-    }
+    ydl_opts = video_download_options(download_path, temp_cookie_path)
     prog = None
     
     async def reply(text):

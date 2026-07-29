@@ -285,9 +285,13 @@ async def send_direct_group(c, messages, tcid, ft=None, rtmid=None, user_client=
                 try:
                     if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
                         mtd = await get_video_metadata(fpath)
-                        dur = mtd.get('duration') if mtd else None
-                        w = mtd.get('width') if mtd else None
-                        h = mtd.get('height') if mtd else None
+                        source_video = getattr(msg, 'video', None) or getattr(msg, 'video_note', None)
+                        # OpenCV/ffprobe can occasionally fail on a just-downloaded file.  Keep
+                        # Telegram's source metadata as a fallback so portrait videos retain their
+                        # orientation instead of being uploaded with missing dimensions.
+                        dur = (mtd or {}).get('duration') or getattr(source_video, 'duration', None)
+                        w = (mtd or {}).get('width') or getattr(source_video, 'width', None)
+                        h = (mtd or {}).get('height') or getattr(source_video, 'height', None)
                         sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
                         thumb = await screenshot(fpath, dur or 0, sender_id)
                         if thumb:
@@ -886,9 +890,12 @@ async def text_handler(c, m):
                                     try:
                                         if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
                                             mtd = await get_video_metadata(f_path)
-                                            dur = mtd.get('duration') if mtd else None
-                                            w = mtd.get('width') if mtd else None
-                                            h = mtd.get('height') if mtd else None
+                                            source_video = getattr(msg, 'video', None) or getattr(msg, 'video_note', None)
+                                            # Preserve source dimensions if local probing is unavailable;
+                                            # this is especially important for portrait media groups.
+                                            dur = (mtd or {}).get('duration') or getattr(source_video, 'duration', None)
+                                            w = (mtd or {}).get('width') or getattr(source_video, 'width', None)
+                                            h = (mtd or {}).get('height') or getattr(source_video, 'height', None)
                                             sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
                                             thumb = await screenshot(f_path, dur or 0, sender_id)
                                             if thumb:

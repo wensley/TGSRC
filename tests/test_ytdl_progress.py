@@ -68,3 +68,15 @@ def test_progress_callback_returns_string():
     out = ytdl.progress_callback(done, total, user_id)
     assert isinstance(out, str)
     assert '进度' in out or 'Progress' in out
+
+
+def test_video_download_options_supports_social_media_streams():
+    import plugins.ytdl as ytdl
+
+    options = ytdl.video_download_options('C:/tmp/social-video.mp4', 'C:/tmp/cookies.txt')
+
+    assert options['format'] == 'bestvideo*+bestaudio/best'
+    assert options['merge_output_format'] == 'mp4'
+    assert options['noplaylist'] is True
+    assert options['cookiefile'] == 'C:/tmp/cookies.txt'
+    assert options['http_headers']['User-Agent']
