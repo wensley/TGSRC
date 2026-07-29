@@ -176,6 +176,7 @@ async def process_audio(client, event, url, cookies_env_var=None):
         'quiet': False,
         'noplaylist': True,
         'ffmpeg_location': '/usr/bin',
+        'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
     }
     prog = None
  
@@ -350,7 +351,12 @@ async def process_spotify_audio(client, event, url):
     def sync_download():
         try:
             from spotdl import Spotdl
-            spotdl = Spotdl(output=output_template, format="mp3")
+            # spotdl 新版本可能不支持 output 参数，尝试兼容
+            try:
+                spotdl = Spotdl(output=output_template, format="mp3")
+            except TypeError:
+                # 新版本 spotdl：去掉 output 参数
+                spotdl = Spotdl(format="mp3")
             songs = spotdl.search([url])
             if not songs:
                 raise Exception("未找到歌曲")
@@ -573,6 +579,7 @@ async def process_video(client, event, url, cookies_env_var, check_duration_and_
         'writethumbnail': True,
         'verbose': True,
         'ffmpeg_location': '/usr/bin',
+        'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
     }
     prog = None
     

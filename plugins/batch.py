@@ -277,47 +277,45 @@ async def send_direct_group(c, messages, tcid, ft=None, rtmid=None, user_client=
             if not files:
                 return False
 
-            from pyrogram.types import InputMediaVideo, InputMediaPhoto, InputMediaDocument
-            media = []
             thumbs_to_cleanup = []
+            all_sent = True
             for fpath, msg in zip(files, messages):
                 caption = msg.caption if getattr(msg, 'caption', None) else None
                 lower = fpath.lower()
-                if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
-                    # gather metadata and generate thumbnail
-                    try:
+                try:
+                    if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
                         mtd = await get_video_metadata(fpath)
-                        dur = mtd.get('duration') or 0
-                        w = mtd.get('width') or None
-                        h = mtd.get('height') or None
+                        dur = mtd.get('duration') if mtd else None
+                        w = mtd.get('width') if mtd else None
+                        h = mtd.get('height') if mtd else None
                         sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
-                        thumb = await screenshot(fpath, dur, sender_id)
+                        thumb = await screenshot(fpath, dur or 0, sender_id)
                         if thumb:
                             thumbs_to_cleanup.append(thumb)
-                        media.append(InputMediaVideo(fpath, caption=caption, thumb=thumb, duration=dur, width=w, height=h))
-                    except Exception:
-                        # fallback: send without extra metadata
-                        media.append(InputMediaVideo(fpath, caption=caption))
-                elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    media.append(InputMediaPhoto(fpath, caption=caption))
-                else:
-                    media.append(InputMediaDocument(fpath, caption=caption))
+                        await c.send_video(tcid, video=fpath, caption=caption, thumb=thumb,
+                                           width=w, height=h, duration=dur, supports_streaming=True,
+                                           reply_to_message_id=rtmid)
+                    elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                        await c.send_photo(tcid, photo=fpath, caption=caption, reply_to_message_id=rtmid)
+                    else:
+                        await c.send_document(tcid, document=fpath, caption=caption, reply_to_message_id=rtmid)
+                except Exception as se:
+                    print(f"send_direct_group individual send failed: {se}")
+                    all_sent = False
+                # clean up individual downloaded file
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
 
-            if media:
-                await c.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                # cleanup downloaded files and generated thumbs
-                for f in files:
-                    try:
-                        os.remove(f)
-                    except Exception:
-                        pass
-                for t in thumbs_to_cleanup:
-                    try:
-                        os.remove(t)
-                    except Exception:
-                        pass
-                shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
-            return True
+            # clean up generated thumbs
+            for t in thumbs_to_cleanup:
+                try:
+                    os.remove(t)
+                except Exception:
+                    pass
+            shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
+            return all_sent
         except Exception as e:
             print(f"send_direct_group download fallback failed: {e}")
             # ensure temp dir is cleaned up on failure too
@@ -876,54 +874,50 @@ async def text_handler(c, m):
                                 downloaded_files.append((f, msg))
                         
                         if len(downloaded_files) == total:
-                            await pt.edit(f'✅ 所有文件下载完成，正在合并上传为媒体组...')
+                            await pt.edit(f'✅ 所有文件下载完成，正在逐个发送（send_media_group 在此版本 pyrofork 中不可用）...')
                             
-                            from pyrogram.types import InputMediaVideo, InputMediaPhoto, InputMediaDocument
-                            media = []
                             thumbs_to_cleanup = []
+                            all_sent = True
+                            # 逐个文件发送，替换 send_media_group（pyrofork 版本兼容性）
                             for f_path, msg in downloaded_files:
                                 caption = msg.caption if getattr(msg, 'caption', None) else None
                                 lower = f_path.lower()
-                                if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
-                                    try:
-                                        mtd = await get_video_metadata(f_path)
-                                        dur = mtd.get('duration') or None
-                                        w = mtd.get('width') or None
-                                        h = mtd.get('height') or None
-                                        sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
-                                        thumb = await screenshot(f_path, dur or 0, sender_id)
-                                        if thumb:
-                                            thumbs_to_cleanup.append(thumb)
-                                        media.append(InputMediaVideo(f_path, caption=caption, thumb=thumb, duration=dur, width=w, height=h))
-                                    except Exception:
-                                        media.append(InputMediaVideo(f_path, caption=caption))
-                                elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                                    media.append(InputMediaPhoto(f_path, caption=caption))
-                                else:
-                                    media.append(InputMediaDocument(f_path, caption=caption))
-                            
-                            # 所有文件收集完毕后，统一发送媒体组（必须在 for 循环外部）
-                            if media:
                                 for tcid, rtmid in targets:
                                     try:
-                                        await ubot.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                    except Exception as ge:
-                                        print(f"Send media group to {tcid} via bot failed: {ge}")
-                                        try:
-                                            if uc:
-                                                await uc.send_media_group(tcid, media, reply_to_message_id=rtmid)
-                                        except Exception as ue:
-                                            print(f"Send media group to {tcid} via user failed: {ue}")
-                                await pt.edit(f'✅ 媒体组合并发送成功！')
-                            else:
-                                await pt.edit(f'没有可发送的媒体文件。')
-                            for f, _ in downloaded_files:
-                                if os.path.exists(f): os.remove(f)
+                                        if lower.endswith(('.mp4', '.mkv', '.avi', '.mov', '.m4v')):
+                                            mtd = await get_video_metadata(f_path)
+                                            dur = mtd.get('duration') if mtd else None
+                                            w = mtd.get('width') if mtd else None
+                                            h = mtd.get('height') if mtd else None
+                                            sender_id = getattr(msg, 'sender_id', None) or getattr(getattr(msg, 'from_user', None), 'id', None)
+                                            thumb = await screenshot(f_path, dur or 0, sender_id)
+                                            if thumb:
+                                                thumbs_to_cleanup.append(thumb)
+                                            await ubot.send_video(tcid, video=f_path, caption=caption, thumb=thumb,
+                                                                  width=w, height=h, duration=dur, supports_streaming=True,
+                                                                  reply_to_message_id=rtmid)
+                                        elif lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                                            await ubot.send_photo(tcid, photo=f_path, caption=caption, reply_to_message_id=rtmid)
+                                        else:
+                                            await ubot.send_document(tcid, document=f_path, caption=caption, reply_to_message_id=rtmid)
+                                    except Exception as se:
+                                        print(f"个发到 {tcid} 失败: {se}")
+                                        all_sent = False
+                                # 清理已发送的临时文件
+                                try:
+                                    os.remove(f_path)
+                                except Exception:
+                                    pass
+                            # 清理缩略图
                             for t in thumbs_to_cleanup:
                                 try:
                                     os.remove(t)
                                 except Exception:
                                     pass
+                            if all_sent:
+                                await pt.edit(f'✅ 所有文件已发送成功！')
+                            else:
+                                await pt.edit(f'部分文件发送失败，请检查日志。')
                             return
                     except Exception as ge:
                         print(f"Group download/upload error: {ge}")
