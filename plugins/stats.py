@@ -1,0 +1,187 @@
+# Copyright (c) 2025 devgagan : https://github.com/devgaganin.  
+# Licensed under the GNU General Public License v3.0.  
+# See LICENSE file in the repository root for full license text.
+
+from datetime import timedelta, datetime
+from shared_client import client as bot_client
+from telethon import events, Button
+from utils.func import get_premium_details, is_private_chat, get_display_name, get_user_data, is_premium_user, remove_premium_user
+from config import OWNER_ID
+import logging
+logging.basicConfig(format=
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger('teamspy')
+
+
+@bot_client.on(events.NewMessage(pattern='/status'))
+async def status_handler(event):
+    if not await is_private_chat(event):
+        await event.respond("❌ 为了安全起见，此指令只能在私信中使用。")
+        return
+    
+    """Handle /status command to check user session and bot status"""
+    user_id = event.sender_id
+    user_data = await get_user_data(user_id)
+    
+    session_active = False
+    bot_active = False
+    
+    if user_data and "session_string" in user_data:
+            session_active = True
+    
+    # Check if user has a custom bot
+    if user_data and "bot_token" in user_data:
+        bot_active = True
+    
+    # Add premium status check
+    premium_status = "❌ 您目前还不是会员"
+    premium_details = await get_premium_details(user_id)
+    if premium_details:
+        # Convert to IST timezone (or just show directly)
+        expiry_utc = premium_details["subscription_end"]
+        formatted_expiry = expiry_utc.strftime("%Y-%m-%d %H:%M:%S")
+        premium_status = f"✅ 会员有效期至: {formatted_expiry}"
+    
+    await event.respond(
+        "📊 **您的当前状态:**\n\n"
+        f"**登录状态:** {'✅ 已登录' if session_active else '❌ 未登录'}\n"
+        f"**会员状态:** {premium_status}",
+        buttons=[
+            [Button.inline("💎 购买会员", data=b"see_plan"),
+             Button.url("📢 加入频道", "https://t.me/avworldcn")]
+        ]
+    )
+
+@bot_client.on(events.NewMessage(pattern='/transfer'))
+async def transfer_premium_handler(event):
+    if not await is_private_chat(event):
+        await event.respond(
+            '❌ 为了安全起见，此指令只能在私信中使用。'
+            )
+        return
+    user_id = event.sender_id
+    sender = await event.get_sender()
+    sender_name = get_display_name(sender)
+    if not await is_premium_user(user_id):
+        await event.respond(
+            "❌ 您没有可转让的会员资格。")
+        return
+    args = event.text.split()
+    if len(args) != 2:
+        await event.respond(
+            '📝 **使用方法:** `/transfer [用户ID]`\n例如: `/transfer 123456789`')
+        return
+    try:
+        target_user_id = int(args[1])
+    except ValueError:
+        await event.respond(
+            '❌ Invalid user ID. Please provide a valid numeric user ID.')
+        return
+    if target_user_id == user_id:
+        await event.respond('❌ You cannot transfer premium to yourself.')
+        return
+    if await is_premium_user(target_user_id):
+        await event.respond(
+            '❌ The target user already has a premium subscription.')
+        return
+    try:
+        premium_details = await get_premium_details(user_id)
+        if not premium_details:
+            await event.respond('❌ Error retrieving your premium details.')
+            return
+        target_name = 'Unknown'
+        try:
+            target_entity = await bot_client.get_entity(target_user_id)
+            target_name = get_display_name(target_entity)
+        except Exception as e:
+            logger.warning(f'Could not get target user name: {e}')
+        now = datetime.now()
+        expiry_date = premium_details['subscription_end']
+        duration_seconds = (expiry_date - now).total_seconds()
+        from utils.func import get_redis, _serialize
+        r = await get_redis()
+        target_key = f"premium:{target_user_id}"
+        pipe = r.pipeline()
+        pipe.hset(target_key, "user_id", _serialize(str(target_user_id)))
+        pipe.hset(target_key, "subscription_start", _serialize(now.timestamp()))
+        pipe.hset(target_key, "subscription_end", _serialize(expiry_date.timestamp()))
+        pipe.hset(target_key, "expireAt", _serialize(expiry_date.timestamp()))
+        pipe.hset(target_key, "transferred_from", _serialize(str(user_id)))
+        pipe.hset(target_key, "transferred_from_name", _serialize(sender_name))
+        pipe.delete(f"premium:{user_id}")
+        await pipe.execute()
+        expiry_ist = expiry_date + timedelta(hours=5, minutes=30)
+        formatted_expiry = expiry_ist.strftime('%d-%b-%Y %I:%M:%S %p')
+        await event.respond(
+            f'✅ Premium subscription successfully transferred to {target_name} ({target_user_id}). Your premium access has been removed.'
+            )
+        try:
+            await bot_client.send_message(target_user_id,
+                f'🎁 You have received a premium subscription transfer from {sender_name} ({user_id}). Your premium is valid until {formatted_expiry} (IST).'
+                )
+        except Exception as e:
+            logger.error(f'Could not notify target user {target_user_id}: {e}')
+        try:
+            owner_id = int(OWNER_ID) if isinstance(OWNER_ID, str
+                ) else OWNER_ID[0] if isinstance(OWNER_ID, list) else OWNER_ID
+            await bot_client.send_message(owner_id,
+                f'♻️ Premium Transfer: {sender_name} ({user_id}) has transferred their premium to {target_name} ({target_user_id}). Expiry: {formatted_expiry}'
+                )
+        except Exception as e:
+            logger.error(f'Could not notify owner about premium transfer: {e}')
+        return
+    except Exception as e:
+        logger.error(
+            f'Error transferring premium from {user_id} to {target_user_id}: {e}'
+            )
+        await event.respond(f'❌ Error transferring premium: {str(e)}')
+        return
+@bot_client.on(events.NewMessage(pattern='/rem'))
+async def remove_premium_handler(event):
+    user_id = event.sender_id
+    if not await is_private_chat(event):
+        return
+    if user_id not in OWNER_ID:
+        return
+    args = event.text.split()
+    if len(args) != 2:
+        await event.respond('Usage: /rem user_id\nExample: /rem 123456789')
+        return
+    try:
+        target_user_id = int(args[1])
+    except ValueError:
+        await event.respond(
+            '❌ Invalid user ID. Please provide a valid numeric user ID.')
+        return
+    if not await is_premium_user(target_user_id):
+        await event.respond(
+            f'❌ User {target_user_id} does not have a premium subscription.')
+        return
+    try:
+        target_name = 'Unknown'
+        try:
+            target_entity = await bot_client.get_entity(target_user_id)
+            target_name = get_display_name(target_entity)
+        except Exception as e:
+            logger.warning(f'Could not get target user name: {e}')
+        deleted = await remove_premium_user(target_user_id)
+        if deleted:
+            await event.respond(
+                f'✅ Premium subscription successfully removed from {target_name} ({target_user_id}).'
+                )
+            try:
+                await bot_client.send_message(target_user_id,
+                    '⚠️ Your premium subscription has been removed by the administrator.'
+                    )
+            except Exception as e:
+                logger.error(
+                    f'Could not notify user {target_user_id} about premium removal: {e}'
+                    )
+        else:
+            await event.respond(
+                f'❌ Failed to remove premium from user {target_user_id}.')
+        return
+    except Exception as e:
+        logger.error(f'Error removing premium from {target_user_id}: {e}')
+        await event.respond(f'❌ Error removing premium: {str(e)}')
+        return
