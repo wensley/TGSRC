@@ -197,6 +197,26 @@ async def remove_user_bot(user_id):
     return True
 
 
+_MARKDOWN_LINK_PATTERN = re.compile(r'\[[^\]]*\]\(\s*(?:https?://|www\.)[^)]*\)')
+_URL_PATTERN = re.compile(r'(?:https?://|www\.)[^\s<>"\'()\[\]]+')
+_MENTION_PATTERN = re.compile(r'(?<![\w.])@[A-Za-z][A-Za-z0-9_]{4,31}')
+
+
+def strip_mentions_and_links(text):
+    """移除 caption 中的 @用户名、http/https 链接与裸 www 域名，并清理多余空白。"""
+    if not text:
+        return text
+
+    cleaned = _MARKDOWN_LINK_PATTERN.sub(" ", text)
+    cleaned = _URL_PATTERN.sub(" ", cleaned)
+    cleaned = _MENTION_PATTERN.sub(" ", cleaned)
+
+    cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+    cleaned = re.sub(r'[ \t]*\n[ \t]*', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
 async def process_text_with_rules(user_id, text):
     if not text:
         return ""
@@ -214,7 +234,7 @@ async def process_text_with_rules(user_id, text):
             filtered_words = [w for w in words if w not in delete_words]
             processed_text = " ".join(filtered_words)
         
-        return processed_text
+        return strip_mentions_and_links(processed_text)
     except Exception as e:
         logger.error(f"Error processing text with rules: {e}")
         return text

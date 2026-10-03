@@ -76,6 +76,13 @@ def _get_file_size(message) -> int:
         return message.video_note.file_size or 0
     elif message.voice:
         return message.voice.file_size or 0
+    elif message.photo:
+        # 缺少 photo 分支会导致照片永远返回 0，从而跳过并行下载
+        return message.photo.file_size or 0
+    elif message.sticker:
+        return message.sticker.file_size or 0
+    elif message.animation:
+        return message.animation.file_size or 0
     return 0
 
 
@@ -162,18 +169,49 @@ async def fast_download(
             failed[0] = True
 
     # 分配工作
-    tasks = []
+    # 关键：区间必须精确铺满 [0, file_size)。
+    # 旧实现用 start = i * chunk_size 且 end = min(start + chunk_size, file_size)，
+    # 而 chunk_size 已向下对齐到 1MB，导致 num_workers * chunk_size < file_size，
+    # 末尾区间永远不会被下载 —— 文件保持预分配时的 0 字节空洞，产出截断文件。
+    ranges = []
+    pos = 0
     for i in range(num_workers):
-        start = i * chunk_size
-        end = min(start + chunk_size, file_size)
-        if start >= file_size:
+        if pos >= file_size:
             break
-        tasks.append(worker(_download_pool[i], start, end))
+        end = min(pos + chunk_size, file_size)
+        if i == num_workers - 1:
+            end = file_size          # 最后一个 worker 收尾
+        if end <= pos:
+            break
+        ranges.append((pos, end))
+        pos = end
+    if pos < file_size:
+        # 对齐余量：交给最后一个 worker 补齐
+        ranges.append((pos, file_size))
+        pos = file_size
+
+    if not ranges:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return None
+
+    tasks = []
+    for idx, (start, end) in enumerate(ranges):
+        tasks.append(worker(_download_pool[idx % len(_download_pool)], start, end))
 
     await asyncio.gather(*tasks)
 
     if failed[0]:
         # 部分失败，清理并回退
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return None
+
+    # 覆盖率校验：任何缺口都会留下 0 字节空洞，必须回退重下
+    covered = sum(e - s for s, e in ranges)
+    if covered < file_size:
+        print(f"fast_download: incomplete coverage {covered}/{file_size}, "
+              f"discarding to avoid corrupt file")
         if os.path.exists(output_path):
             os.remove(output_path)
         return None
