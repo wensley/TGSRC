@@ -64,10 +64,10 @@ def strip_markdown(text):
 CAPTION_LIMIT = 1024
 
 
-async def safe_edit(pt, text):
+async def safe_edit(pt, text, reply_markup=None):
     """进度消息编辑失败（FloodWait / 消息已删除等）绝不能中断发送逻辑"""
     try:
-        await safe_edit(pt, text)
+        await pt.edit_text(text, reply_markup=reply_markup)
     except Exception:
         pass
 
@@ -663,7 +663,7 @@ async def process_media_group(ubot, uc, messages, targets, pt, uid, i, lt):
                     excluded = len(downloaded_files) - album_sent
                     _purge_temp()
                     if excluded == 0 and all_chunks_ok:
-                        await safe_edit(pt, '✅ 媒体组合并发送成功！')
+                        await safe_edit(pt, '✅ 媒体组合并发送成功')
                         return album_sent
                     # 有文件未进相册（被排除的分片/类型），不能宣告完成，交给第 3 步
                     print(f"[group] album sent {album_sent} file(s), {excluded} excluded/unconfirmed; "
@@ -1252,7 +1252,7 @@ async def text_handler(c, m):
                     if should_cancel(uid):
                         await pt.delete()
                     elif got:
-                        await safe_edit(pt, f'✅ 处理完成：媒体组合并发送成功，{got}/{total} 个文件。')
+                        await safe_edit(pt, '✅ 媒体组合并发送成功')
                     else:
                         await safe_edit(pt, f'❌ 搬运失败：{total} 个文件一个都没发出去。\n请执行 `docker compose logs bot | grep -E "\\[direct\\]|\\[group\\]|\\[caption\\]"` 查看原因。')
                 else:
