@@ -129,6 +129,21 @@ cancel - 🚫 取消当前操作
 
 ## 📅 更新日志 (Update History)
 
+### [2026.10.09] - 媒体组搬运修复与运行稳定性优化
+- **媒体组（相册）搬运重构**：
+  - 改为下载后使用 `send_media_group` 合并上传，不再使用 `forward_messages` / `copy_media_group`，确保内容不显示“转发自”；相册合并失败时才逐条兜底并保留正文。
+  - **修复无音轨视频合并上传必失败**：上传前用 ffmpeg 补一条静音 AAC 音轨，视频流 `-c:v copy` 不重编码，解决 Telegram 返回 `[400 MEDIA_EMPTY]` 的问题；已有音轨的文件不做改动。
+  - 修复媒体组扩展名前多余空格、视频缩略图与画面比例错误。
+- **搬运完成提示修复**：
+  - 修复 `safe_edit` 递归调用自身导致的 `RecursionError` 被异常吞掉的问题，此前 27 处调用全部静默失效，消息会一直停留在“正在提取并处理...”。
+  - `safe_edit` 补充 `reply_markup` 参数，避免任务运行中传入按钮时抛出 `TypeError`；媒体组完成提示统一为“媒体组合并发送成功”。
+- **下载引擎修复**：
+  - `fast_download` 下载区间精确铺满 `[0, file_size)`，修复对齐余量导致的尾部空洞与文件截断，并补齐 `photo` / `sticker` / `animation` 的文件大小读取。
+  - `login_in_progress` 过滤补 `from_user` 判空，避免频道消息触发 `AttributeError`。
+- **其他优化**：
+  - `caption` 自动去除 @提及、http/https 链接与裸域名，相册正文只加在首条并做 1024 字截断。
+  - `Dockerfile` 设置 `PYTHONUNBUFFERED`，保证容器日志实时输出。
+
 ### [2026.05.13] - 深度汉化与功能大版本更新
 - **全系统深度汉化**：
   - 彻底完成了所有插件（`ytdl`, `login`, `batch`, `stats`, `start`）的交互提示汉化。
