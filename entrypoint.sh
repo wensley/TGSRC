@@ -20,4 +20,13 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT
 
-wait $FLASK_PID $BOT_PID
+# Exit as soon as either child dies.  In particular, the in-app Pyrogram
+# watchdog calls os._exit(1) if the session is stuck; the container must
+# then stop so Docker's "restart: always" policy can bring it back.
+set +e
+wait -n $FLASK_PID $BOT_PID
+STATUS=$?
+
+echo "A child process exited (status $STATUS); shutting down..."
+cleanup
+exit $STATUS
