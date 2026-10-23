@@ -7,6 +7,9 @@ import sys
 from telethon import TelegramClient
 from config import API_ID, API_HASH, BOT_TOKEN, STRING
 from pyrogram import Client
+from utils.pyrogram_guard import install_pyrogram_session_patch
+
+install_pyrogram_session_patch()
 
 SESSION_DIR = os.getenv("SESSION_DIR", "sessions")
 os.makedirs(SESSION_DIR, exist_ok=True)

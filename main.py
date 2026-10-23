@@ -9,8 +9,45 @@ import importlib
 import os
 import sys
 
+async def pyrogram_watchdog(app, max_down_seconds: int = 120):
+    """Restart the container if the Pyrogram session stays down too long.
+
+    A transient reconnect normally takes a few seconds.  If the session is
+    still not started after ``max_down_seconds`` the process is in a broken
+    restart loop; exiting lets Docker's ``restart: always`` policy recover
+    it with a clean state (and clears leaked sockets).
+    """
+    down_since = None
+    while True:
+        await asyncio.sleep(30)
+        try:
+            session = getattr(app, "session", None)
+            alive = bool(session is not None and session.is_started.is_set())
+        except Exception:
+            alive = False
+
+        if alive:
+            if down_since is not None:
+                print("[watchdog] Pyrogram session recovered", flush=True)
+            down_since = None
+            continue
+
+        now = asyncio.get_event_loop().time()
+        if down_since is None:
+            down_since = now
+            print("[watchdog] Pyrogram session is down, waiting for recovery...", flush=True)
+        elif now - down_since >= max_down_seconds:
+            print(
+                f"[watchdog] Pyrogram session down for more than {max_down_seconds}s; "
+                "exiting so Docker can restart the bot",
+                flush=True,
+            )
+            os._exit(1)
+
+
 async def load_and_run_plugins():
-    await start_client()
+    client, app, userbot = await start_client()
+    asyncio.create_task(pyrogram_watchdog(app))
     plugin_dir = "plugins"
     plugins = [f[:-3] for f in os.listdir(plugin_dir) if f.endswith(".py") and f != "__init__.py"]
 
