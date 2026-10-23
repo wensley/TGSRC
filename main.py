@@ -17,6 +17,7 @@ async def pyrogram_watchdog(app, max_down_seconds: int = 120):
     restart loop; exiting lets Docker's ``restart: always`` policy recover
     it with a clean state (and clears leaked sockets).
     """
+    print(f"[watchdog] started (threshold={max_down_seconds}s)", flush=True)
     down_since = None
     while True:
         await asyncio.sleep(30)
@@ -47,7 +48,9 @@ async def pyrogram_watchdog(app, max_down_seconds: int = 120):
 
 async def load_and_run_plugins():
     client, app, userbot = await start_client()
-    asyncio.create_task(pyrogram_watchdog(app))
+    # Keep a strong reference for the lifetime of the client so the task
+    # cannot be garbage-collected while it is sleeping.
+    app._tgsrc_watchdog_task = asyncio.create_task(pyrogram_watchdog(app))
     plugin_dir = "plugins"
     plugins = [f[:-3] for f in os.listdir(plugin_dir) if f.endswith(".py") and f != "__init__.py"]
 
